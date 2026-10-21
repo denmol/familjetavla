@@ -118,11 +118,11 @@ export interface TravelChoice {
   home?: TravelLeg;
 }
 
-export const HOME_WIDGETS = ["now", "meals", "schoolday", "reminders", "custody", "week", "shopping", "prices", "cars", "lights", "temps", "energy", "climates", "music"] as const;
+export const HOME_WIDGETS = ["now", "meals", "schoolday", "reminders", "custody", "week", "shopping", "prices", "cars", "lights", "temps", "energy", "climates", "music", "vacuums"] as const;
 export type HomeWidget = (typeof HOME_WIDGETS)[number];
 /** Startskärmens rutor: "auto" följer hur många rutor som visas, annars liten/normal/stor. */
 export type WidgetSize = "auto" | "s" | "m" | "l";
-export const TAB_IDS = ["cars", "lights", "house", "energy", "graphs", "music"] as const;
+export const TAB_IDS = ["cars", "lights", "house", "energy", "graphs", "music", "vacuums"] as const;
 export type TabId = (typeof TAB_IDS)[number];
 
 // ---------- Leverantörsmoduler (skola, mataffär, sopor, elpris) ----------
@@ -212,6 +212,24 @@ export interface CarEntity {
   charging?: string;
   /** Förvärmning: climate.*, switch.* eller button.* på bilen. */
   climate?: string;
+}
+
+/** Robotdammsugare: vacuum.* plus kartan och det som hör till samma enhet. Fungerar med alla märken i Home Assistant. */
+export interface VacuumEntity {
+  name: string;
+  entityId: string;
+  /** Märkesfamilj för rumsstädning; saknas = bara start, paus, hem och inställningar. */
+  brand?: "roborock" | "dreame";
+  /** image.* eller camera.* med husets karta. */
+  map?: string;
+  battery?: string;
+  /** Rummet dammsugaren är i just nu. */
+  room?: string;
+  error?: string;
+  /** Förbrukningsdelar och statistik (sensor.*), visas som rader. */
+  sensors?: string[];
+  /** Inställningar: select, switch, number, time, button. */
+  controls?: string[];
 }
 
 export interface DeviceCard {
@@ -318,6 +336,8 @@ export interface Config {
     speakers?: NamedEntity[];
     /** Musik: favoritkanaler, t.ex. P4 Jönköping eller RIX FM. */
     stations?: RadioStation[];
+    /** Dammsugare-fliken: robotdammsugare med karta och inställningar. */
+    vacuums?: VacuumEntity[];
   };
   dashboard: {
     accent: string;
@@ -558,6 +578,7 @@ export interface Dashboard {
   }[];
   lights: Lamp[];
   music?: Music;
+  vacuums: DashVacuum[];
   lightGroups: { index: number; name: string; on: number; total: number; offline: string[]; lamps: Lamp[] }[];
   buttons: { entityId: string; name: string; style: "accent" | "blue" | "amber" | "plain" }[];
   climates: {
@@ -640,6 +661,41 @@ export interface Music {
   stations: { index: number; name: string; logo?: string; url: string }[];
   /** Home Assistant's Spotify integration: null when it is not installed (the tab then says how). */
   spotify: { entityId: string; playing: boolean; title?: string; device?: string; offline: boolean } | null;
+}
+
+/** Dammsugarens tillstånd i klartext, oavsett märke. */
+export type VacuumPhase = "cleaning" | "returning" | "docked" | "paused" | "idle" | "error" | "offline";
+
+/** Ett rum på kartan, i kartbildens pixlar (när kartan är kalibrerad). */
+export interface VacuumRoom {
+  id: string;
+  name: string;
+  /** Rektangel i kartbildens pixlar; saknas när kartan inte kan kalibreras. */
+  box?: { x: number; y: number; w: number; h: number };
+}
+
+/** En robotdammsugare på tavlan. */
+export interface DashVacuum {
+  index: number;
+  name: string;
+  entityId: string;
+  phase: VacuumPhase;
+  /** "Städar", "Laddar", … */
+  label: string;
+  battery: number | null;
+  charging: boolean;
+  fanSpeed?: string;
+  fanSpeeds: { value: string; label: string }[];
+  room?: string;
+  error?: string;
+  /** Kartan finns; hämtas från /api/vacuum/:index/map. Ändras när bilden uppdateras. */
+  mapVersion?: string;
+  rooms: VacuumRoom[];
+  /** Rumsstädning går att starta (känt märke och rummen hittades). */
+  canRooms: boolean;
+  can: { start: boolean; pause: boolean; stop: boolean; home: boolean; locate: boolean; spot: boolean };
+  rows: { name: string; value: string; ok: boolean }[];
+  controls: Control[];
 }
 
 /** One lamp on the board. brightness 1–100 when it is on and can be dimmed. */

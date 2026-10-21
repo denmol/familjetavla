@@ -4,7 +4,9 @@ import { z } from "zod";
 import { cached, invalidate } from "./cache.js";
 import { lookupPostcode } from "./connectors/geo.js";
 import { detectGroups, fetchIcs, filterEvents } from "./connectors/ics.js";
-import { ha, haConnection } from "./connectors/ha.js";
+import { ha, haConnection, type HaState } from "./connectors/ha.js";
+import { fetchWithTimeout } from "./http.js";
+import { opCall, roomCalls, roomsOf } from "./vacuum.js";
 import { geocode } from "./connectors/weather.js";
 import { buildDashboard, gatherFamily } from "./dashboard.js";
 import { duties, dutiesIcs } from "./plan.js";
@@ -257,6 +259,22 @@ export const configSchema = z
         .array(z.object({ title: label(40), series: z.array(z.object({ name: label(30), entityId: entity, color: z.string().regex(/^#[0-9a-fA-F]{6}$/) })).max(6) }))
         .max(6),
       speakers: z.array(z.object({ name: label(40), entityId: entity.regex(/^media_player\./) })).max(12).optional(),
+      vacuums: z
+        .array(
+          z.object({
+            name: label(40),
+            entityId: entity.regex(/^vacuum\./),
+            brand: z.enum(["roborock", "dreame"]).optional(),
+            map: entity.regex(/^(image|camera)\./).optional(),
+            battery: entity.optional(),
+            room: entity.optional(),
+            error: entity.optional(),
+            sensors: z.array(entity).max(16).optional(),
+            controls: z.array(entity).max(16).optional(),
+          }),
+        )
+        .max(4)
+        .optional(),
       stations: z
         .array(z.object({ name: label(40), url: z.string().url().max(500).regex(/^https?:\/\//), logo: z.string().url().max(500).regex(/^https:\/\//).optional() }))
         .max(16)
@@ -453,6 +471,7 @@ export async function registerRoutes(app: FastifyInstance) {
       ...(e.deviceCards ?? []).flatMap((x) => [x.primary, ...x.sensors, ...x.controls].filter(Boolean) as string[]),
       ...(c.shopping.entityId ? [c.shopping.entityId] : []),
       ...(e.speakers ?? []).map((x) => x.entityId),
+      ...(e.vacuums ?? []).flatMap((x) => [x.entityId, x.map, x.battery, x.room, x.error, ...(x.sensors ?? []), ...(x.controls ?? [])].filter(Boolean) as string[]),
     ]);
   };
   let watchSet = watched();
@@ -875,6 +894,7 @@ export async function registerRoutes(app: FastifyInstance) {
     const allowed = new Set([
       ...(cfg.entities.climates ?? []).flatMap((c) => c.controls ?? []),
       ...(cfg.entities.deviceCards ?? []).flatMap((c) => c.controls),
+      ...(cfg.entities.vacuums ?? []).flatMap((v) => v.controls ?? []),
     ]);
     const conn = haConnection();
     if (!entityId || !allowed.has(entityId)) return fail(reply, new Error("Okänt reglage"));
@@ -941,6 +961,71 @@ export async function registerRoutes(app: FastifyInstance) {
     } catch (e) {
       return fail(reply, e);
     }
+  });
+
+  // ---------- Dammsugare ----------
+  const vacuumAt = (i: unknown) => loadConfig().entities.vacuums?.[Number(i)];
+
+  /** The floor plan, fetched from Home Assistant with the board's own token (the token never reaches the browser). */
+  app.get("/api/vacuum/:index/map", async (req, reply) => {
+    const v = vacuumAt((req.params as { index: string }).index);
+    const conn = haConnection();
+    if (!v?.map || !conn) return reply.code(404).send({ error: "Ingen karta" });
+    const kind = v.map.startsWith("camera.") ? "camera_proxy" : "image_proxy";
+    try {
+      const img = await cached(`vacmap:${v.map}`, 15_000, async () => {
+        const res = await fetchWithTimeout(`${conn.base}/${kind}/${encodeURIComponent(v.map!)}`, { timeoutMs: 15_000, headers: { authorization: `Bearer ${conn.token}` } });
+        if (!res.ok) throw new Error(`Home Assistant svarade ${res.status} på kartan`);
+        return { type: res.headers.get("content-type") ?? "image/png", body: Buffer.from(await res.arrayBuffer()) };
+      });
+      reply.header("cache-control", "private, max-age=10");
+      reply.type(img.type);
+      return reply.send(img.body);
+    } catch (e) {
+      return fail(reply, e, 502);
+    }
+  });
+
+  app.post("/api/vacuum/:index/action", async (req, reply) => {
+    const v = vacuumAt((req.params as { index: string }).index);
+    const body = z.object({ op: z.enum(["start", "pause", "stop", "home", "locate", "spot", "fan"]), value: z.string().max(60).optional() }).safeParse(req.body);
+    const conn = haConnection();
+    if (!v || !body.success) return fail(reply, new Error("Okänd dammsugare"));
+    if (!conn) return fail(reply, new Error("Home Assistant är inte anslutet."));
+    const c = opCall(body.data.op, v.entityId, body.data.value);
+    try {
+      await ha.service(conn, c.domain, c.service, c.data);
+    } catch (e) {
+      return fail(reply, new Error(`${v.name} kunde inte ${body.data.op}: ${(e as Error).message}`), 502);
+    }
+    invalidate("ha:states");
+    return { ok: true };
+  });
+
+  /** Clean chosen rooms. Rooms come from Home Assistant, never from the request. */
+  app.post("/api/vacuum/:index/rooms", async (req, reply) => {
+    const v = vacuumAt((req.params as { index: string }).index);
+    const body = z.object({ rooms: z.array(z.string().max(20)).min(1).max(20), repeat: z.number().int().min(1).max(3).default(1) }).safeParse(req.body);
+    const conn = haConnection();
+    if (!v || !body.success) return fail(reply, new Error("Okänd dammsugare eller rum"));
+    if (!conn) return fail(reply, new Error("Home Assistant är inte anslutet."));
+    const states = new Map<string, HaState>();
+    for (const id of [v.entityId, v.map]) if (id) states.set(id, await ha.state(conn, id));
+    const calls = roomCalls(v.brand, v.entityId, roomsOf(v, states), body.data.rooms, body.data.repeat);
+    if (!calls.length) {
+      return fail(reply, new Error(v.brand ? "Rummen finns inte längre i dammsugarens karta – ladda om tavlan." : "Rumsstädning stöds inte för den här dammsugaren än – starta städning och välj rum i märkets egen app."));
+    }
+    let last: unknown;
+    for (const c of calls) {
+      try {
+        await ha.service(conn, c.domain, c.service, c.data);
+        invalidate("ha:states");
+        return { ok: true };
+      } catch (e) {
+        last = e;
+      }
+    }
+    return fail(reply, new Error(`${v.name} kunde inte städa rummen: ${(last as Error).message}`), 502);
   });
 
   // ---------- Photo frame ----------

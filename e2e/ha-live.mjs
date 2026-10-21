@@ -92,6 +92,23 @@ await check("Bilar", async () => {
     .join("; ");
 });
 
+await check("Dammsugare", async () => {
+  const vs = found?.vacuums ?? [];
+  if (!vs.length) return "inga dammsugare hittade";
+  const { rawRooms, placeRooms, roomCalls } = await import("../server/dist/vacuum.js");
+  // Read only: what the board would offer – nothing is started.
+  return vs
+    .map((v) => {
+      const map = states.find((s) => s.entity_id === v.map);
+      const vac = states.find((s) => s.entity_id === v.entityId);
+      const raw = rawRooms(map?.attributes, vac?.attributes);
+      const rooms = placeRooms(raw, map?.attributes?.calibration_points);
+      const cleaning = roomCalls(v.brand, v.entityId, raw, raw.map((r) => r.id)).length > 0;
+      return `${v.name}: ${vac?.state}, märke ${v.brand ?? "okänt"}, karta ${v.map ?? "saknas"}, ${rooms.length} rum (${rooms.filter((r) => r.box).length} placerade på kartan), rumsstädning ${cleaning ? "ja" : "nej"}, ${v.sensors?.length ?? 0} värden, ${v.controls?.length ?? 0} inställningar`;
+    })
+    .join("; ");
+});
+
 await check("Kalendrar", async () => {
   const cals = byDomain("calendar");
   const now = new Date();

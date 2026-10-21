@@ -9,6 +9,7 @@ const at = (days, h, m = 0) => new Date(now.getFullYear(), now.getMonth(), now.g
 const ago = (hours) => iso(new Date(Date.now() - hours * 3_600_000));
 
 const devices = {
+  rr: { name: "Foppa", m: "Roborock", mo: "Roborock S8", area: null },
   tesla: { name: "Tesla Model Y", m: "Tesla", area: "Garage" },
   leaf: { name: "Nissan Leaf", m: "Nissan", area: "Garage" },
   inv: { name: "SolarEdge", m: "SolarEdge", area: null },
@@ -34,6 +35,24 @@ const prices = Array.from({ length: 48 }, (_, h) => {
 });
 
 const states = [
+  S("vacuum.foppa", "docked", { friendly_name: "Foppa", fan_speed: "max_plus", fan_speed_list: ["quiet","balanced","turbo","max","max_plus","off","custom"], supported_features: 30524 }, "rr"),
+  S("sensor.foppa_batteri", "100", { friendly_name: "Foppa Batteri", unit_of_measurement: "%", device_class: "battery" }, "rr"),
+  S("sensor.foppa_status", "charging", { friendly_name: "Foppa Status", device_class: "enum" }, "rr"),
+  S("sensor.foppa_nuvarande_rum", "Hallen", { friendly_name: "Foppa Nuvarande rum", device_class: "enum" }, "rr"),
+  S("sensor.foppa_fel_pa_dammsugaren", "none", { friendly_name: "Foppa Fel på dammsugaren" }, "rr"),
+  S("sensor.foppa_filtertid_kvar", "123.972777777778", { friendly_name: "Foppa Filtertid kvar", unit_of_measurement: "h", device_class: "duration" }, "rr"),
+  S("sensor.foppa_huvudborste_tid_kvar", "117.214444444444", { friendly_name: "Foppa Huvudborste tid kvar", unit_of_measurement: "h", device_class: "duration" }, "rr"),
+  S("sensor.foppa_sidoborste_tid_kvar", "17.2144444444444", { friendly_name: "Foppa Sidoborste tid kvar", unit_of_measurement: "h", device_class: "duration" }, "rr"),
+  S("sensor.foppa_stadad_area", "55.3", { friendly_name: "Foppa Städad area", unit_of_measurement: "m²", device_class: "area" }, "rr"),
+  S("sensor.foppa_totalt_antal_stadningar", "146", { friendly_name: "Foppa Totalt antal städningar" }, "rr"),
+  S("sensor.foppa_sluttid_for_senaste_stadningen", "2026-08-29T15:02:09+00:00", { friendly_name: "Foppa Sluttid för senaste städningen", device_class: "timestamp" }, "rr"),
+  S("select.foppa_mopplage", "standard", { friendly_name: "Foppa Moppläge", options: ["standard","deep","deep_plus","fast","custom"] }, "rr"),
+  S("select.foppa_moppintensitet", "off", { friendly_name: "Foppa Moppintensitet", options: ["off","mild","standard","intense","custom"] }, "rr"),
+  S("select.foppa_hemmet_rotation", "0", { friendly_name: "Foppa Hemmet rotation", options: ["0","90","180","270"] }, "rr"),
+  S("number.foppa_volym", "100.0", { friendly_name: "Foppa Volym", min: 0, max: 100, step: 10 }, "rr"),
+  S("switch.foppa_stor_inte", "off", { friendly_name: "Foppa Stör inte" }, "rr"),
+  S("time.foppa_starttid_stor_ej_lage", "22:00:00", { friendly_name: "Foppa Starttid Stör ej-läge" }, "rr"),
+  S("image.foppa_hemmet_custom", "2026-10-21T17:28:41.213332+00:00", { friendly_name: "Foppa Hemmet_custom", calibration_points: [{vacuum:{x:25500,y:25500},map:{x:700,y:612}},{vacuum:{x:35500,y:25500},map:{x:1500,y:612}},{vacuum:{x:25500,y:35500},map:{x:700,y:-188}}], rooms: {"1":{x0:26450,y0:22550,x1:26900,y1:25000,number:1,name:"Unknown"},"16":{x0:26950,y0:22350,x1:29800,y1:25100,number:16,name:"Köket"},"17":{x0:20450,y0:23600,x1:26250,y1:28150,number:17,name:"Hallen"},"18":{x0:25150,y0:25100,x1:31300,y1:32300,number:18,name:"Matplatsen"},"19":{x0:30950,y0:25750,x1:36500,y1:29750,number:19,name:"Vardagsrummet"},"20":{x0:18200,y0:19750,x1:23800,y1:25050,number:20,name:"Tvättstugan"},"21":{x0:29800,y0:21900,x1:33500,y1:25750,number:21,name:"Williams rum"},"22":{x0:32950,y0:22050,x1:36550,y1:25850,number:22,name:"Sovrummet"},"23":{x0:21600,y0:26300,x1:23150,y1:28750,number:23,name:"Badrummet"},"24":{x0:23200,y0:27000,x1:26200,y1:29400,number:24,name:"Kontoret"}}, entity_picture: "/api/image_proxy/image.foppa_hemmet_custom?token=x" }, "rr"),
   S("sensor.tesla_battery", 95, { friendly_name: "Tesla Model Y Battery", unit_of_measurement: "%", device_class: "battery" }, "tesla"),
   S("sensor.tesla_range", 532, { friendly_name: "Tesla Model Y Range", unit_of_measurement: "km" }, "tesla"),
   S("device_tracker.tesla_location", "not_home", { friendly_name: "Tesla Model Y Location" }, "tesla"),
@@ -184,6 +203,10 @@ createServer(async (req, res) => {
   const url = new URL(req.url, "http://x");
   const p = url.pathname;
   if (feeds[p]) return send(res, 200, feeds[p], "text/calendar");
+  if (p.startsWith("/api/image_proxy/")) {
+    console.log("image_proxy", p, req.headers.authorization ? "with bearer" : "NO AUTH");
+    return send(res, 200, '<svg xmlns="http://www.w3.org/2000/svg" width="1800" height="1200" viewBox="0 0 1800 1200"><rect x="816" y="644" width="228" height="220" fill="hsl(180,40%,45%)" fill-opacity=".5" stroke="#fff" stroke-width="2"/><rect x="296" y="400" width="464" height="364" fill="hsl(200,40%,45%)" fill-opacity=".5" stroke="#fff" stroke-width="2"/><rect x="672" y="68" width="492" height="576" fill="hsl(220,40%,45%)" fill-opacity=".5" stroke="#fff" stroke-width="2"/><rect x="1136" y="272" width="444" height="320" fill="hsl(240,40%,45%)" fill-opacity=".5" stroke="#fff" stroke-width="2"/><rect x="116" y="648" width="448" height="424" fill="hsl(260,40%,45%)" fill-opacity=".5" stroke="#fff" stroke-width="2"/><rect x="1044" y="592" width="296" height="308" fill="hsl(280,40%,45%)" fill-opacity=".5" stroke="#fff" stroke-width="2"/><rect x="1296" y="584" width="288" height="304" fill="hsl(300,40%,45%)" fill-opacity=".5" stroke="#fff" stroke-width="2"/><rect x="388" y="352" width="124" height="196" fill="hsl(320,40%,45%)" fill-opacity=".5" stroke="#fff" stroke-width="2"/><rect x="516" y="300" width="240" height="192" fill="hsl(340,40%,45%)" fill-opacity=".5" stroke="#fff" stroke-width="2"/></svg>', "image/svg+xml");
+  }
   if (p === "/api/") return send(res, 200, { message: "API running." });
   if (p === "/api/states" && req.method === "GET") return send(res, 200, states.map(pub));
   if (p.startsWith("/api/states/")) {

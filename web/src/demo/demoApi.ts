@@ -274,6 +274,80 @@ fx.cars.push({
     { entityId: "lock.volvo_xc60_las", name: "Lås", domain: "lock", state: "locked" },
   ],
 } as unknown as CarDetails);
+// ---- Robot vacuums: a Roborock with a calibrated map (tap rooms to clean) and a plain one without ----
+const DEMO_ROOMS: [string, string, number, number, number, number][] = [
+  ["16", "Köket", 20, 20, 250, 190],
+  ["18", "Matplatsen", 280, 20, 230, 190],
+  ["19", "Vardagsrummet", 520, 20, 360, 250],
+  ["17", "Hallen", 20, 220, 250, 200],
+  ["24", "Kontoret", 280, 220, 230, 120],
+  ["22", "Sovrummet", 520, 280, 200, 260],
+  ["21", "Williams rum", 730, 280, 150, 260],
+  ["20", "Tvättstugan", 20, 430, 160, 110],
+  ["23", "Badrummet", 190, 430, 150, 110],
+];
+const DEMO_MAP =
+  "data:image/svg+xml," +
+  encodeURIComponent(
+    `<svg xmlns="http://www.w3.org/2000/svg" width="900" height="560" viewBox="0 0 900 560">${DEMO_ROOMS.map(
+      ([, , x, y, w, h], i) => `<rect x="${x}" y="${y}" width="${w}" height="${h}" rx="10" fill="hsl(${200 + i * 14},35%,42%)" fill-opacity=".55" stroke="#9aa4c8" stroke-opacity=".5" stroke-width="3"/>`,
+    ).join("")}</svg>`,
+  );
+const demoControls = (name: string): Dashboard["vacuums"][number]["controls"] => [
+  { entityId: "select.foppa_mopplage", name: "Moppläge", domain: "select", state: "standard", on: false, offline: false, options: ["standard", "deep", "deep_plus", "fast"] },
+  { entityId: "select.foppa_moppintensitet", name: "Moppintensitet", domain: "select", state: "off", on: false, offline: false, options: ["off", "mild", "standard", "intense"] },
+  { entityId: "select.foppa_rengoringslage", name: "Rengöringsläge", domain: "select", state: "vacuum", on: false, offline: false, options: ["vacuum", "vac_and_mop", "mop"] },
+  { entityId: "number.foppa_volym", name: "Volym", domain: "number", state: "60", on: false, offline: false, min: 0, max: 100, step: 10, unit: "%" },
+  { entityId: "switch.foppa_stor_inte", name: `Stör inte (${name})`, domain: "switch", state: "off", on: false, offline: false },
+  { entityId: "time.foppa_starttid", name: "Stör ej från", domain: "time", state: "22:00:00", on: false, offline: false },
+];
+d.vacuums = [
+  {
+    index: 0,
+    name: "Foppa",
+    entityId: "vacuum.foppa",
+    phase: "docked",
+    label: "Laddar",
+    battery: 100,
+    charging: true,
+    fanSpeed: "balanced",
+    fanSpeeds: ["quiet", "balanced", "turbo", "max"].map((value) => ({ value, label: { quiet: "Tyst", balanced: "Balanserad", turbo: "Turbo", max: "Max" }[value]! })),
+    room: "Hallen",
+    mapVersion: "demo",
+    rooms: DEMO_ROOMS.map(([id, name, x, y, w, h]) => ({ id, name, box: { x, y, w, h } })),
+    canRooms: true,
+    can: { start: true, pause: true, stop: true, home: true, locate: true, spot: true },
+    rows: [
+      { name: "Filtertid kvar", value: "124 h", ok: true },
+      { name: "Huvudborste tid kvar", value: "117 h", ok: true },
+      { name: "Sidoborste tid kvar", value: "17 h", ok: true },
+      { name: "Sensortid kvar", value: "4 h", ok: true },
+      { name: "Städad area (senast)", value: "55,3 m²", ok: true },
+      { name: "Totalt antal städningar", value: "146", ok: true },
+    ],
+    controls: demoControls("Foppa"),
+  },
+  {
+    index: 1,
+    name: "Robby",
+    entityId: "vacuum.robby",
+    phase: "idle",
+    label: "Redo",
+    battery: 74,
+    charging: false,
+    fanSpeed: "standard",
+    fanSpeeds: [{ value: "standard", label: "Normal" }, { value: "strong", label: "Kraftig" }],
+    rooms: [],
+    canRooms: false,
+    can: { start: true, pause: true, stop: false, home: true, locate: true, spot: false },
+    rows: [],
+    controls: [],
+  },
+];
+
+if (!d.home.some((w) => w.id === "vacuums")) d.home.splice(d.home.findIndex((w) => w.id === "lights") + 1, 0, { id: "vacuums", on: true });
+if (!d.tabs.some((t) => t.id === "vacuums")) d.tabs.push({ id: "vacuums", on: true });
+
 // ---- Energy today in the demo (a sunny October day with solar and a grid meter) ----
 if (d.energy) {
   d.energy.selfUseKw = Math.min(d.energy.solarKw ?? 0, d.energy.houseKw ?? 0);
@@ -704,6 +778,24 @@ export const demoApi = {
   stopMusic: (speaker: string) => {
     const sp = d.music?.speakers.find((x) => x.entityId === speaker);
     if (sp) Object.assign(sp, { playing: false, station: undefined, title: undefined });
+    return wait({});
+  },
+  vacuumMapUrl: (_index: number, _version: string) => DEMO_MAP,
+  vacuumOp: (index: number, op: string, value?: string) => {
+    const v = d.vacuums[index];
+    if (v) {
+      if (op === "start") Object.assign(v, { phase: "cleaning", label: v.room ? `Städar · ${v.room}` : "Städar", charging: false });
+      if (op === "pause") Object.assign(v, { phase: "paused", label: "Pausad" });
+      if (op === "stop") Object.assign(v, { phase: "idle", label: "Redo" });
+      if (op === "home") Object.assign(v, { phase: "returning", label: "På väg hem" });
+      if (op === "fan" && value) v.fanSpeed = value;
+    }
+    return wait({});
+  },
+  vacuumRooms: (index: number, rooms: string[], _repeat = 1) => {
+    const v = d.vacuums[index];
+    const first = v?.rooms.find((r) => r.id === rooms[0]);
+    if (v) Object.assign(v, { phase: "cleaning", label: first ? `Städar · ${first.name}` : "Städar", charging: false, room: first?.name ?? v.room });
     return wait({});
   },
   volume: (speaker: string, pct: number) => {

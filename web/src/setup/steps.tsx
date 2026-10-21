@@ -551,6 +551,7 @@ export function DiscoverStep({ cfg, set }: StepProps) {
       r.lightGroups.forEach((_, i) => (p[`lg${i}`] = true));
       r.temps.slice(0, 3).forEach((_, i) => (p[`t${i}`] = true));
       (r.speakers ?? []).slice(0, 4).forEach((_, i) => (p[`sp${i}`] = true));
+      (r.vacuums ?? []).slice(0, 4).forEach((_, i) => (p[`vc${i}`] = true));
       p.todo = r.todo.length > 0;
       p.waste = r.calendars.some((c) => c.waste);
       p.price = false;
@@ -581,6 +582,12 @@ export function DiscoverStep({ cfg, set }: StepProps) {
       // Found speakers turn the Musik card on; channels are added under Huset → Musik.
       if (!(cfg.entities.speakers ?? []).length) next.dashboard.home = next.dashboard.home.map((w) => (w.id === "music" ? { ...w, on: true } : w));
       next.entities.speakers = speakers;
+    }
+    const vacuums = (d.vacuums ?? []).filter((_, i) => on(`vc${i}`)).slice(0, 4).map(({ maker: _m, ...v }) => v);
+    if (vacuums.length) {
+      // A found vacuum turns its card on the home screen on.
+      if (!(cfg.entities.vacuums ?? []).length) next.dashboard.home = next.dashboard.home.map((w) => (w.id === "vacuums" ? { ...w, on: true } : w));
+      next.entities.vacuums = vacuums;
     }
     if (on("todo") && d.todo[0]) next.shopping = { ...next.shopping, source: "ha", entityId: d.todo.find((t) => /shop|inköp|handla/i.test(t.entityId + t.name))?.entityId ?? d.todo[0].entityId };
     const wasteCal = d.calendars.find((c) => c.waste);
@@ -616,7 +623,7 @@ export function DiscoverStep({ cfg, set }: StepProps) {
   // existing settings are only replaced after "Använd det valda".
   const [fresh] = useState(() => {
     const e = cfg.entities;
-    return e.cars.length + e.climates.length + e.deviceCards.length + e.lightGroups.length + e.temps.length + (e.speakers ?? []).length === 0 && !Object.values(e.energy).some(Boolean);
+    return e.cars.length + e.climates.length + e.deviceCards.length + e.lightGroups.length + e.temps.length + (e.speakers ?? []).length + (e.vacuums ?? []).length === 0 && !Object.values(e.energy).some(Boolean);
   });
   useEffect(() => {
     if (d && (fresh || applied)) apply();
@@ -698,6 +705,14 @@ export function DiscoverStep({ cfg, set }: StepProps) {
               <h2>Högtalare för musik</h2>
               {d.speakers!.map((x, i) => (
                 <Box key={x.entityId} k={`sp${i}`} label={x.name} sub={x.entityId} />
+              ))}
+            </section>
+          )}
+          {(d.vacuums ?? []).length > 0 && (
+            <section className="card">
+              <h2>Robotdammsugare</h2>
+              {d.vacuums!.map((x, i) => (
+                <Box key={x.entityId} k={`vc${i}`} label={x.name} sub={[x.maker, x.map && "karta", x.brand && "rumsstädning", x.controls?.length && `${x.controls.length} inställningar`].filter(Boolean).join(" · ")} />
               ))}
             </section>
           )}
@@ -1484,6 +1499,37 @@ export function HouseStep({ cfg, set, saveNow }: StepProps) {
       </section>
       <MusicCard cfg={cfg} set={set} saveNow={saveNow} />
       <ListCard
+        title="Dammsugare"
+        help="Robotdammsugare från Home Assistant – Roborock, Dreame, Roomba, Ecovacs och andra märken. Karta, rum och inställningar hittas oftast av sig själva under Hämta från Home Assistant."
+        items={en.vacuums ?? []}
+        onChange={(vacuums) => setEn({ vacuums })}
+        make={(): NonNullable<Config["entities"]["vacuums"]>[number] => ({ name: "", entityId: "" })}
+        addLabel="Lägg till dammsugare"
+        render={(v, s) => (
+          <div className="grid-2">
+            <Text label="Namn" value={v.name} onChange={(x) => s({ ...v, name: x })} />
+            <EntityPicker label="Dammsugare" domains={["vacuum"]} value={v.entityId || undefined} onChange={(x, o) => s({ ...v, entityId: x ?? "", name: v.name || o?.name || "" })} optional={false} />
+            <EntityPicker label="Karta (bild)" domains={["image", "camera"]} value={v.map} onChange={(x) => s({ ...v, map: x })} help="Roborock Custom Map, Dreame, Valetudo m.fl. ger en bild av huset." />
+            <Select
+              label="Rumsstädning"
+              value={v.brand ?? ""}
+              onChange={(x) => s({ ...v, brand: (x || undefined) as typeof v.brand })}
+              options={[
+                { value: "", label: "Ingen (bara start, paus och hem)" },
+                { value: "roborock", label: "Roborock / Xiaomi" },
+                { value: "dreame", label: "Dreame / Mova" },
+              ]}
+              help="Välj märke för att kunna städa enskilda rum från kartan."
+            />
+            <EntityPicker label="Batteri" domains={["sensor"]} value={v.battery} onChange={(x) => s({ ...v, battery: x })} />
+            <EntityPicker label="Rum just nu" domains={["sensor"]} value={v.room} onChange={(x) => s({ ...v, room: x })} />
+            <EntityPicker label="Fel" domains={["sensor"]} value={v.error} onChange={(x) => s({ ...v, error: x })} />
+            <MultiEntityPicker label="Förbrukning och statistik" domains={["sensor"]} value={v.sensors ?? []} onChange={(x) => s({ ...v, sensors: x })} />
+            <MultiEntityPicker label="Inställningar (moppläge, stör ej …)" domains={["select", "switch", "number", "time", "button"]} value={v.controls ?? []} onChange={(x) => s({ ...v, controls: x })} />
+          </div>
+        )}
+      />
+      <ListCard
         title="Ljusgrupper"
         help="Visas på fliken Ljus med Tänd alla / Släck alla."
         items={en.lightGroups}
@@ -1689,7 +1735,7 @@ function PhotoFrame({ cfg, set }: { cfg: Config; set: (c: Config) => void }) {
 
 // ======================= Startskärm =======================
 
-const TAB_LABELS: Record<string, string> = { cars: "Bil", lights: "Ljus", house: "Hus", energy: "Energi", graphs: "Grafer", music: "Musik" };
+const TAB_LABELS: Record<string, string> = { cars: "Bil", lights: "Ljus", house: "Hus", energy: "Energi", graphs: "Grafer", music: "Musik", vacuums: "Dammsugare" };
 
 const SIZE_OPTIONS = [
   { value: "auto", label: "Auto" },
