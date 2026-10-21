@@ -37,6 +37,19 @@ const next = {
       { name: "Tesla Model Y", battery: "sensor.tesla_battery", range: "sensor.tesla_range", location: "device_tracker.tesla_location", charging: "binary_sensor.tesla_charging", climate: "climate.tesla_climate" },
       { name: "Nissan Leaf", battery: "sensor.leaf_battery_level", range: "sensor.leaf_range_ac_off", location: "binary_sensor.leaf_plugged_in", charging: "binary_sensor.leaf_charging", climate: "switch.leaf_climate_control" },
     ],
+    vacuums: [
+      {
+        name: "Foppa",
+        entityId: "vacuum.foppa",
+        brand: "roborock",
+        map: "image.foppa_hemmet_custom",
+        battery: "sensor.foppa_batteri",
+        room: "sensor.foppa_nuvarande_rum",
+        error: "sensor.foppa_fel_pa_dammsugaren",
+        sensors: ["sensor.foppa_filtertid_kvar", "sensor.foppa_huvudborste_tid_kvar", "sensor.foppa_sidoborste_tid_kvar", "sensor.foppa_stadad_area"],
+        controls: ["select.foppa_mopplage", "select.foppa_moppintensitet", "select.hallen_foppa_rengoringslage", "number.foppa_volym", "switch.foppa_stor_inte"],
+      },
+    ],
     energy: { solar: "sensor.solaredge_current_power", grid: "sensor.grid_power", house: "sensor.house_power" },
     lights: [
       { name: "Kök", entityId: "light.kok_tak" },

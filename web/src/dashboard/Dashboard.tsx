@@ -15,9 +15,10 @@ import { InstallHelp, quickAddUrl } from "../InstallHelp";
 import { isInstalled } from "../install";
 import { CarsPage, EnergyPage, GraphsPage, HousePage, LightsPage } from "./Pages";
 import { MusicPage } from "../widgets/music";
+import { VacuumPage } from "../widgets/vacuums";
 
-export type Tab = "home" | "cars" | "lights" | "house" | "energy" | "graphs" | "music";
-const TAB_IDS: Tab[] = ["home", "cars", "lights", "house", "energy", "graphs", "music"];
+export type Tab = "home" | "cars" | "lights" | "house" | "energy" | "graphs" | "music" | "vacuums";
+const TAB_IDS: Tab[] = ["home", "cars", "lights", "house", "energy", "graphs", "music", "vacuums"];
 const PAGE_IDS = Object.keys(PAGE_TITLES) as PageId[];
 
 const TABS: { id: Tab; label: string; icon: IconName; show: (d: Dash) => boolean }[] = [
@@ -28,6 +29,7 @@ const TABS: { id: Tab; label: string; icon: IconName; show: (d: Dash) => boolean
   { id: "energy", label: "Energi", icon: "bolt", show: (d) => Boolean(d.energy || d.prices) },
   { id: "graphs", label: "Grafer", icon: "graph", show: (d) => d.graphs.length > 0 || Boolean(d.prices) },
   { id: "music", label: "Musik", icon: "music", show: (d) => Boolean(d.music?.speakers.length) },
+  { id: "vacuums", label: "Dammsugare", icon: "vacuum", show: (d) => d.vacuums.length > 0 },
 ];
 
 const THEME_KEY = "familjetavla.theme";
@@ -1035,6 +1037,7 @@ export function Dashboard() {
               {tab === "energy" && <EnergyPage data={data} />}
               {tab === "graphs" && <GraphsPage data={data} />}
               {tab === "music" && <MusicPage data={data} actions={actions} />}
+              {tab === "vacuums" && <VacuumPage data={data} actions={actions} />}
             </Fit>
           )}
         </div>

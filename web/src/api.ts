@@ -1,4 +1,4 @@
-import type { CarEntity, Config, ConfigResponse, Dashboard, Integration, NamedEntity, Schedule, TestResult, TravelChoice } from "../../server/src/types";
+import type { CarEntity, Config, ConfigResponse, Dashboard, Integration, NamedEntity, Schedule, TestResult, TravelChoice, VacuumEntity } from "../../server/src/types";
 
 /** A station in the Musik tab: every Swedish station from the radio directory. */
 export interface DirStation {
@@ -31,6 +31,7 @@ export interface Discovery {
   priceSensors: NamedEntity[];
   buttons: { name: string; entityId: string }[];
   speakers?: NamedEntity[];
+  vacuums?: (VacuumEntity & { maker?: string })[];
   summary: string[];
 }
 
@@ -193,6 +194,9 @@ const realApi = {
   favoriteStation: (b: { id?: string; url?: string; on: boolean }) => post("music/favorite", b),
   spotify: (op: "playpause" | "next") => post("music/spotify", { op }),
   volume: (speaker: string, pct: number) => post("music/volume", { speaker, pct }),
+  vacuumOp: (index: number, op: "start" | "pause" | "stop" | "home" | "locate" | "spot" | "fan", value?: string) => post(`vacuum/${index}/action`, { op, value }),
+  vacuumMapUrl: (index: number, version: string) => `api/vacuum/${index}/map?v=${encodeURIComponent(version)}`,
+  vacuumRooms: (index: number, rooms: string[], repeat = 1) => post(`vacuum/${index}/rooms`, { rooms, repeat }),
   searchStations: (q: string) => request<{ stations: StationHit[] }>(`radio/search?q=${encodeURIComponent(q)}`),
   addItem: (name: string) => post("shopping/add", { name }),
   toggleItem: (id: string, done: boolean) => post("shopping/toggle", { id, done }),

@@ -1,6 +1,7 @@
 import { ha, type HaConn, type HaState } from "./connectors/ha.js";
 import { haSocket } from "./connectors/haws.js";
-import type { CarEntity, Config, NamedEntity } from "./types.js";
+import type { CarEntity, Config, NamedEntity, VacuumEntity } from "./types.js";
+import { brandOf } from "./vacuum.js";
 
 /**
  * Discover what a Home Assistant install already has, so the wizard can pre-fill cars,
@@ -144,6 +145,8 @@ export interface Discovery {
   buttons: { name: string; entityId: string }[];
   /** Speakers for Musik: Google/Nest, Chromecast, Sonos … – not TVs, not Spotify's own player. */
   speakers: NamedEntity[];
+  /** Robot vacuums with their map and the settings on the same device. */
+  vacuums: (VacuumEntity & { maker?: string })[];
   summary: string[];
 }
 
@@ -279,6 +282,35 @@ export function discover(all: HaEntityInfo[]): Discovery {
     // "Google Home Mini" in the area Kök reads as "Kök" – unless two speakers share the room.
     .map((x, _i, list) => ({ name: x.a && list.filter((y) => y.a === x.a).length === 1 ? x.a : x.n, entityId: x.e }));
 
+  // ---- Robot vacuums: any vacuum.* – the map, battery, room and settings sit on the same device (or share its name)
+  const vacuums: Discovery["vacuums"] = all
+    .filter((x) => domain(x.e) === "vacuum")
+    .map((x) => {
+      const mine = (x.d ? (byDevice.get(x.d) ?? []) : []).filter((y) => y.e !== x.e);
+      // Custom map integrations sometimes make their own device: then the name ("Foppa …") ties it to the vacuum.
+      const byName = all.filter((y) => !mine.includes(y) && y.e !== x.e && y.n.toLowerCase().startsWith(`${x.n.toLowerCase()} `) && !["vacuum", "update"].includes(domain(y.e)));
+      const own = [...mine, ...byName];
+      const map =
+        own.find((y) => ["image", "camera"].includes(domain(y.e)) && has(`${y.n} ${y.e}`, /map|karta|custom/i)) ?? own.find((y) => ["image", "camera"].includes(domain(y.e)));
+      const battery = own.find((y) => domain(y.e) === "sensor" && y.u === "%" && (y.dc === "battery" || has(y.n, /batter/i)));
+      const room = own.find((y) => domain(y.e) === "sensor" && has(y.n, /current room|nuvarande rum|aktuellt rum|current segment/i));
+      const error = own.find((y) => domain(y.e) === "sensor" && has(y.n, /(^|\s)(error|fel)(\s|$)|fel på|vacuum error/i));
+      const status = (y: HaEntityInfo) => has(y.n, /status|state|läge/i) && !has(y.n, /städning/i);
+      const taken = new Set([battery?.e, room?.e, error?.e, map?.e]);
+      const sensors = own
+        .filter((y) => domain(y.e) === "sensor" && !taken.has(y.e) && !status(y) && y.st !== "unavailable" && (y.dc === "duration" || y.dc === "area" || y.dc === "timestamp" || has(y.u, /^(h|min|m²|m2|%)$/) || has(y.n, /filter|brush|borste|mop|mopp|städ|clean|antal|count|total/i)))
+        .slice(0, 10)
+        .map((y) => y.e);
+      const order = ["select", "number", "switch", "time", "button"];
+      const controls = own
+        .filter((y) => order.includes(domain(y.e)) && y.st !== "unavailable" && !has(y.n, /rotation/i))
+        .sort((p, q) => order.indexOf(domain(p.e)) - order.indexOf(domain(q.e)))
+        .slice(0, 12)
+        .map((y) => y.e);
+      const brand = brandOf(`${x.m ?? ""} ${x.mo ?? ""} ${x.dn ?? ""} ${x.e}`);
+      return { name: x.dn ?? x.n, entityId: x.e, maker: x.m ?? undefined, brand, map: map?.e, battery: battery?.e, room: room?.e, error: error?.e, sensors, controls };
+    });
+
   const summary = [
     cars.length ? `${cars.length} bil${cars.length > 1 ? "ar" : ""}: ${cars.map((c) => c.name).join(", ")}` : "",
     solar ? `Solel: ${solar.n}${solar.m ? ` (${solar.m})` : ""}` : "",
@@ -290,6 +322,7 @@ export function discover(all: HaEntityInfo[]): Discovery {
     priceSensors.length ? `Elpris-sensor: ${priceSensors[0].name}` : "",
     calendars.some((c) => c.waste) ? "Sopkalender hittad" : "",
     speakers.length ? `Högtalare: ${speakers.map((x) => x.name).join(", ")}` : "",
+    vacuums.length ? `Dammsugare: ${vacuums.map((x) => x.name).join(", ")}` : "",
   ].filter(Boolean);
 
   return {
@@ -304,6 +337,7 @@ export function discover(all: HaEntityInfo[]): Discovery {
     priceSensors,
     buttons,
     speakers,
+    vacuums,
     summary,
   };
 }

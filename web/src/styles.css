@@ -3240,3 +3240,61 @@ marker.pf-buy path {
   text-overflow: ellipsis;
   overflow-wrap: normal;
 }
+
+/* ---------- Dammsugare ---------- */
+.vac-map {
+  position: relative;
+  width: 100%;
+  max-width: 880px;
+  align-self: center;
+  border-radius: 16px;
+  overflow: hidden;
+  background: color-mix(in srgb, var(--text) 5%, transparent);
+}
+.vac-map img,
+.vac-map svg {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+.vac-map svg {
+  position: absolute;
+  inset: 0;
+  height: 100%;
+}
+.vac-room {
+  cursor: pointer;
+  outline: none;
+}
+.vac-room rect {
+  fill: color-mix(in srgb, var(--text) 6%, transparent);
+  stroke: color-mix(in srgb, var(--text) 35%, transparent);
+  stroke-width: 3;
+  transition: fill 0.15s;
+}
+.vac-room text {
+  fill: var(--text);
+  font-weight: 700;
+  paint-order: stroke;
+  stroke: color-mix(in srgb, var(--bg-solid) 70%, transparent);
+  stroke-width: 4px;
+  pointer-events: none;
+}
+.vac-room.here rect {
+  stroke: var(--blue);
+  stroke-width: 5;
+}
+.vac-room.on rect {
+  fill: color-mix(in srgb, var(--accent) 45%, transparent);
+  stroke: var(--accent);
+  stroke-width: 5;
+}
+.vac-room:focus-visible rect {
+  stroke: var(--text);
+  stroke-width: 6;
+}
+@media (min-width: 900px) {
+  .vac-wide {
+    grid-column: span 2;
+  }
+}

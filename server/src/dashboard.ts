@@ -6,6 +6,7 @@ import { cached } from "./cache.js";
 import { cheapestBlock, priceLevel, type HourPrice } from "./connectors/elpris.js";
 import { ha, haConnection, type HaState } from "./connectors/ha.js";
 import { buildMusic } from "./music.js";
+import { buildVacuums } from "./vacuum.js";
 import { haSocket } from "./connectors/haws.js";
 import { applySick, loadSick } from "./sick.js";
 import { coldestBetween, forecast, rainBetween, skyNow, sunToday, tempNow, weatherSummary, type Forecast } from "./connectors/weather.js";
@@ -386,6 +387,7 @@ export async function buildDashboard(now = new Date(), opts: { allReminders?: bo
     })),
     lights: cfg.entities.lights.map((l) => lamp(stateMap, l.entityId, l.name)),
     music: buildMusic(cfg, stateMap),
+    vacuums: buildVacuums(cfg, stateMap, (id, prefix) => buildControl(stateMap, id, prefix)),
     lightGroups: (cfg.entities.lightGroups ?? []).map((g, index) => ({
       index,
       name: g.name,
