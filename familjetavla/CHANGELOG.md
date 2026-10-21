@@ -1,5 +1,11 @@
 # Ändringar
 
+## 0.11.0
+
+- **Bensin- och dieselbilar.** En Volvo XC60 (eller annan bil utan batteri) upptäcks nu via sin bränslesensor och visas med bränslemätare i liter, räckvidd, hemma/borta och värmestart. Tankens storlek ställs in i guiden (standard 70 L).
+- **Dammsugare.** Ny flik och ruta för robotdammsugare i Home Assistant: husets karta där du trycker på rummen du vill städa (Roborock och Dreame), starta, pausa, åk hem, hitta, sugkraft, inställningar (moppläge, volym, stör inte …) och förbrukningsdelar. Andra märken får start, paus, hem, sugkraft och karta.
+- **Testtillägg.** Tillägget heter nu Familjetavla Test och har egen image, så det kan köra bredvid originalet.
+
 ## 0.10.0
 
 - **Musik.** Tryck på en radiokanal så spelar den i vald högtalare: Google Home/Nest, Chromecast, Sonos eller annat som finns i Home Assistant. Välj en **förvald högtalare** (t.ex. Google Home i köket) under Inställningar → Huset → Musik, så räcker ett tryck på RIX FM för att det ska spela där.
