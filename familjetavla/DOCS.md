@@ -1,6 +1,8 @@
-# Familjetavla
+# Familjetavla Test
 
-Öppna **Familjetavla** i sidomenyn. Första gången startar installationsguiden – den hittar själv det du har i Home Assistant (bilar, solel, värmepump, spabad, lampor …).
+Den här är en egen testversion (med Volvo/bensinbil och dammsugare) som kan köra **bredvid** originalet: egen data, egna inställningar och egen plats i sidomenyn. Slå på en annan port än originalets 8099 (t.ex. 8098) om plattan ska nå den direkt.
+
+Öppna **Familjetavla Test** i sidomenyn. Första gången startar installationsguiden – den hittar själv det du har i Home Assistant (bilar, solel, värmepump, spabad, lampor …).
 
 ## Väggplatta (iPad/Android)
 
