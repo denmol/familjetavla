@@ -497,8 +497,8 @@ function buildCar(c: Config["entities"]["cars"][number], states: Map<string, HaS
   const battery = num(states, c.battery);
   const fuel = num(states, c.fuel);
   const fuelUnit = c.fuel ? states.get(c.fuel)?.attributes?.unit_of_measurement : undefined;
-  // A tank sensor gives litres (or %): litres need the tank size for the gauge – 60 L unless set.
-  const fuelPct = fuel === null ? null : Math.round(Math.max(0, Math.min(100, fuelUnit === "%" ? fuel : (fuel / (c.tankLiters ?? 60)) * 100)));
+  // A tank sensor gives litres (or %): litres need the tank size for the gauge – 70 L unless set.
+  const fuelPct = fuel === null ? null : Math.round(Math.max(0, Math.min(100, fuelUnit === "%" ? fuel : (fuel / (c.tankLiters ?? 70)) * 100)));
   const rangeKm = num(states, c.range);
   const loc = haValue(states, c.location);
   const home = loc === undefined ? null : loc === "home" || loc === "on" || loc === "true";

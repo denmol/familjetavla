@@ -245,7 +245,7 @@ d.cars.push({
   name: "Volvo XC60",
   battery: null,
   fuelLiters: 41,
-  fuelPct: 68,
+  fuelPct: 59,
   rangeKm: 428,
   home: true,
   charging: false,

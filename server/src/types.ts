@@ -205,7 +205,7 @@ export interface CarEntity {
   battery?: string;
   /** Bensin/diesel: bränslemängd i liter (eller %). */
   fuel?: string;
-  /** Tankens storlek i liter, för bränslemätaren när sensorn ger liter. Standard 60. */
+  /** Tankens storlek i liter, för bränslemätaren när sensorn ger liter. Standard 70 (XC60 och de flesta bilar i klassen). */
   tankLiters?: number;
   range?: string;
   location?: string; // device_tracker, binary_sensor eller sensor
