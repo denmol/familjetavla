@@ -9,7 +9,7 @@ import { geocode } from "./connectors/weather.js";
 import { buildDashboard, gatherFamily } from "./dashboard.js";
 import { duties, dutiesIcs } from "./plan.js";
 import { loadShelf, saveDinner, saveShelf } from "./meals.js";
-import { carActions, carCharging, carRows, deviceEntities, discover, readRegistry } from "./discovery.js";
+import { carActions, carAnchor, carCharging, carRows, deviceEntities, discover, readRegistry } from "./discovery.js";
 import { runEntityAction } from "./scheduler.js";
 import { haSocket } from "./connectors/haws.js";
 import { energyLive, liveEnergyIds } from "./energy.js";
@@ -229,7 +229,7 @@ export const configSchema = z
     schedules: z.array(scheduleSchema).max(40),
     entities: z.object({
       cars: z
-        .array(z.object({ name: label(40), battery: entity, range: entity.optional(), location: entity.optional(), charging: entity.optional(), climate: entity.optional() }))
+        .array(z.object({ name: label(40), battery: entity.optional(), fuel: entity.optional(), tankLiters: z.number().min(5).max(500).optional(), range: entity.optional(), location: entity.optional(), charging: entity.optional(), climate: entity.optional() }))
         .max(6),
       energy: z.object({
         solar: entity.optional(),
@@ -446,7 +446,7 @@ export async function registerRoutes(app: FastifyInstance) {
     return new Set<string>([
       ...e.lights.map((l) => l.entityId),
       ...e.temps.map((t) => t.entityId),
-      ...e.cars.flatMap((x) => [x.battery, x.range, x.location, x.charging, x.climate].filter(Boolean) as string[]),
+      ...e.cars.flatMap((x) => [x.battery, x.fuel, x.range, x.location, x.charging, x.climate].filter(Boolean) as string[]),
       // Energy is not here: it changes every few seconds and goes out as its own small "energy" event.
       ...(e.lightGroups ?? []).flatMap((g) => g.entities),
       ...(e.climates ?? []).flatMap((x) => [x.entityId, ...(x.controls ?? [])]),
@@ -840,7 +840,7 @@ export async function registerRoutes(app: FastifyInstance) {
     const car = loadConfig().entities.cars[index];
     const conn = haConnection();
     if (!car || !conn) throw new Error(car ? "Home Assistant är inte anslutet." : "Okänd bil");
-    const ents = await cached(`car:${index}`, 30_000, () => deviceEntities(conn, car.battery));
+    const ents = await cached(`car:${index}`, 30_000, () => deviceEntities(conn, carAnchor(car)));
     return { car, ents, deviceName: ents[0]?.dn ?? car.name };
   };
 

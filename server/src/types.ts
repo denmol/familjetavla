@@ -201,7 +201,12 @@ export interface TestResult {
 
 export interface CarEntity {
   name: string;
-  battery: string;
+  /** Elbil/hybrid: batteri i %. Saknas på bensin- och dieselbilar (då används `fuel`). */
+  battery?: string;
+  /** Bensin/diesel: bränslemängd i liter (eller %). */
+  fuel?: string;
+  /** Tankens storlek i liter, för bränslemätaren när sensorn ger liter. Standard 60. */
+  tankLiters?: number;
   range?: string;
   location?: string; // device_tracker, binary_sensor eller sensor
   charging?: string;
@@ -539,6 +544,9 @@ export interface Dashboard {
   cars: {
     name: string;
     battery: number | null;
+    /** Bensin/diesel: bränslemängd i liter och hur full tanken är (0–100). */
+    fuelLiters: number | null;
+    fuelPct: number | null;
     rangeKm: number | null;
     home: boolean | null;
     charging: boolean;
