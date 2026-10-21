@@ -311,7 +311,7 @@ export function discover(all: HaEntityInfo[]): Discovery {
 // ---------- Car "Alla data" ----------
 
 const GROUPS: { name: string; re: RegExp }[] = [
-  { name: "Batteri & laddning", re: /batter|charg|ladd|soc|plug|kWh|state of charge|range|räckvidd/i },
+  { name: "Batteri, bränsle & laddning", re: /batter|charg|ladd|soc|plug|kWh|state of charge|range|räckvidd|bränsle|fuel|tom tank/i },
   { name: "Klimat & temperatur", re: /climate|klimat|temp|heat|värm|defrost|seat|ac\b|hvac|preconditio/i },
   { name: "Körning & däck", re: /tire|tyre|däck|odometer|mätar|speed|hastighet|drive|shift|gear|trip/i },
   { name: "Lås & luckor", re: /lock|lås|door|dörr|window|fönster|trunk|frunk|bagage|sunroof|charge port|lucka/i },

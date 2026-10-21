@@ -259,8 +259,8 @@ fx.cars.push({
   valid: 6,
   total: 7,
   rows: [
-    { entityId: "sensor.volvo_xc60_branslemangd", name: "Bränslemängd", value: "41 L", group: "Batteri & laddning", ok: true, domain: "sensor" },
-    { entityId: "sensor.volvo_xc60_avstand_till_tom_tank", name: "Avstånd till tom tank", value: "428 km", group: "Batteri & laddning", ok: true, domain: "sensor" },
+    { entityId: "sensor.volvo_xc60_branslemangd", name: "Bränslemängd", value: "41 L", group: "Batteri, bränsle & laddning", ok: true, domain: "sensor" },
+    { entityId: "sensor.volvo_xc60_avstand_till_tom_tank", name: "Avstånd till tom tank", value: "428 km", group: "Batteri, bränsle & laddning", ok: true, domain: "sensor" },
     { entityId: "sensor.volvo_xc60_matarstallning", name: "Mätarställning", value: "207559 km", group: "Körning & däck", ok: true, domain: "sensor" },
     { entityId: "lock.volvo_xc60_las", name: "Lås", value: "locked", group: "Lås & luckor", ok: true, domain: "lock" },
     { entityId: "binary_sensor.volvo_xc60_dorr_vanster_fram", name: "Dörr vänster fram", value: "off", group: "Lås & luckor", ok: true, domain: "binary_sensor" },

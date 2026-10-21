@@ -163,7 +163,7 @@ function ScheduleEditor({ car, actions }: { car: Dashboard["cars"][number]; acti
 function CarDetailsSheet({ index, onClose, actions }: { index: number; onClose: () => void; actions: Actions }) {
   const [data, setData] = useState<CarDetails | null>(null);
   const [error, setError] = useState("");
-  const [group, setGroup] = useState("Batteri & laddning");
+  const [group, setGroup] = useState("Batteri, bränsle & laddning");
   const load = () =>
     api
       .car(index)
@@ -205,7 +205,7 @@ function CarDetailsSheet({ index, onClose, actions }: { index: number; onClose: 
                     }
                   >
                     {a.name}
-                    {a.domain !== "button" && <span className="muted">· {a.state}</span>}
+                    {a.domain !== "button" && <span className="muted">· {STATE_SV[a.state] ?? a.state}</span>}
                   </button>
                 ))}
               </div>
@@ -298,6 +298,7 @@ function ChargingCard({ index, charging, actions }: { index: number; charging: b
   );
 }
 
+const STATE_SV: Record<string, string> = { locked: "låst", unlocked: "olåst", on: "på", off: "av", open: "öppen", closed: "stängd" };
 const fuelCar = (c: Dashboard["cars"][number]) => c.battery === null && c.fuelPct !== null;
 const carLevelText = (c: Dashboard["cars"][number]) => (fuelCar(c) && c.fuelLiters !== null ? `${c.fuelLiters} L` : `${carLevel(c) ?? "–"} %`);
 
