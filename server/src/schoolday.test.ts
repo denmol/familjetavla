@@ -102,3 +102,24 @@ describe("Ny version", () => {
     expect(newer("0.6.9", "0.7.0")).toBe(false);
   });
 });
+
+describe("Skolan idag – skolans egna tider", () => {
+  const post = (d: number, sh: number, sm: number, eh: number, em: number, title: string) => lesson("leo", d, sh, sm, eh, em, { title, post: true });
+  const day = (d: number, sh: number, sm: number, eh: number, em: number) => lesson("leo", d, sh, sm, eh, em, { title: "Skoldag", schoolDay: true });
+
+  it("takes the school day from the platform, not from a swim test in the calendar", () => {
+    const evs = [post(20, 9, 30, 10, 30, "Simprov"), day(20, 8, 30, 14, 0)];
+    const r = buildSchoolDays(evs, people, at(20, 7))!;
+    expect(r.map((x) => [x.name, x.start, x.end])).toEqual([["Leo", "08:30", "14:00"]]);
+  });
+
+  it("says nothing for a day with only posts – a swim test is not a school day", () => {
+    const r = buildSchoolDays([post(20, 9, 30, 10, 30, "Simprov"), day(21, 8, 30, 15, 30)], people, at(20, 7))!;
+    expect(r.map((x) => [x.dayLabel, x.start, x.end])).toEqual([["imorgon", "08:30", "15:30"]]);
+  });
+
+  it("still marks the day for gym clothes when the gym lesson is a post", () => {
+    const evs = [day(20, 8, 30, 14, 0), { ...post(20, 10, 0, 11, 0, "Idrott"), gym: true }];
+    expect(buildSchoolDays(evs, people, at(20, 7))![0]).toMatchObject({ start: "08:30", end: "14:00", gym: true });
+  });
+});

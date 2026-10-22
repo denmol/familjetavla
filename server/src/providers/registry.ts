@@ -2,7 +2,7 @@ import { getSecret, setSecret } from "../store.js";
 import type { Integration, IntegrationCategory, ProviderMeta, SettingValue } from "../types.js";
 import { hemkop, willys } from "./grocery.js";
 import { haPrice, spotPrice } from "./price.js";
-import { schoolIcs, schoolsoft, skolmatHa, skolmaten, vklass } from "./school.js";
+import { infomentorHa, schoolIcs, schoolsoft, skolmatHa, skolmaten, vklass } from "./school.js";
 import type { AnyProvider, GroceryProvider, PriceProvider, ProviderCtx, SchoolProvider, WasteProvider } from "./types.js";
 import { wasteEdp, wasteHa, wasteIcs, wasteManual, wasteSrv } from "./waste.js";
 
@@ -11,7 +11,7 @@ import { wasteEdp, wasteHa, wasteIcs, wasteManual, wasteSrv } from "./waste.js";
  * providers/types.ts, add it here – the setup wizard draws its form from `meta.fields`.
  */
 export const PROVIDERS = {
-  school: [schoolIcs, skolmaten, skolmatHa, vklass, schoolsoft] as SchoolProvider[],
+  school: [schoolIcs, infomentorHa, skolmaten, skolmatHa, vklass, schoolsoft] as SchoolProvider[],
   grocery: [willys, hemkop] as GroceryProvider[],
   waste: [wasteEdp, wasteSrv, wasteManual, wasteIcs, wasteHa] as WasteProvider[],
   price: [spotPrice, haPrice] as PriceProvider[],
