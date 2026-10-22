@@ -1,5 +1,5 @@
 name: Familjetavla Test
-version: "0.11.0"
+version: "0.11.1"
 slug: familjetavla_test
 description: TEST – egen version med Volvo/bensinbil och dammsugare, bredvid originalet. Familjetavla för surfplattan – kalendrar, barnvecka, skola, sport, sopor, inköp och elpris, plus bilar, ljus och värme från Home Assistant.
 url: https://github.com/denmol/familjetavla
