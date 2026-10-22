@@ -84,7 +84,7 @@ export function buildNow(events: SourcedEvent[], people: Map<string, Person>, no
     .filter((e): e is SourcedEvent => Boolean(e))
     .filter((e) => !e.allDay && e.end > now && e.start < until)
     .filter((e) => visibleOn(e, people, startOfDay(e.start)))
-    .filter((e) => !e.sourceId.startsWith("school:") || e.gym)
+    .filter((e) => !e.sourceId.startsWith("school:") || e.gym || e.post)
     .sort((a, b) => a.start.getTime() - b.start.getTime())
     .slice(0, 3)
     .map((e) => ({
@@ -292,8 +292,9 @@ export async function buildDashboard(now = new Date(), opts: { allReminders?: bo
     const prev = addDays(day, -1);
     const evs = eventsOnDay(all, day)
       .filter((e) => visibleOn(e, people, day))
-      // School lessons are noise on a family board – keep only gym (packing matters) and all-day items.
-      .filter((e) => !e.sourceId.startsWith("school:") || e.gym || e.allDay)
+      // School lessons are noise on a family board – keep gym (packing matters), all-day items and the
+      // school's own posts (a swim test, a dress-up day).
+      .filter((e) => !e.sourceId.startsWith("school:") || e.gym || e.allDay || e.post)
       .sort((a, b) => Number(b.allDay) - Number(a.allDay) || a.start.getTime() - b.start.getTime())
       .map((e) => toDash(e, people, travelCtx));
 

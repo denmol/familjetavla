@@ -64,6 +64,7 @@ Det som inte finns i HA sköts av **leverantörsmoduler**:
 | Kalender | **SportAdmin** | Appen → Aktiviteter → Prenumerera. **Lagfilter** om barnet har flera lag | stabil |
 | Kalender | Home Assistant | Valfri `calendar.*` | stabil |
 | Skola | SchoolSoft, Unikum, IST, Skola24, InfoMentor, Edlevo | Kalenderlänk (ICS) | stabil |
+| Skola | InfoMentor via Home Assistant (HACS) | Skoltider (Skoldag-sensorn), skolans händelser och nyheter | beta |
 | Skolmat | **Skolmaten.se** | Ingen inloggning | beta |
 | Skolmat | Skolmat-integrationen i HA | Mashie, Matilda, FoodIT, Mateo, skolmat.info | stabil |
 | Skola och förskola | **Vklass** | Schema, idrott, omsorgstid, matsedel. Användarnamn + lösenord (inte BankID) | beta |
@@ -163,7 +164,7 @@ för båda. Hur du gör, och hur du testar på alla skärmar, står i **[CONTRIB
 
 Har du ingen kod men en plattform eller pryl som saknas? [Berätta här](../../issues/new/choose).
 
-Önskas: ICA, Coop, Mathem, Unikum, InfoMentor, Trafiklab (nästa buss), hembatterier.
+Önskas: ICA, Coop, Mathem, Unikum, Trafiklab (nästa buss), hembatterier.
 
 ## Tack
 

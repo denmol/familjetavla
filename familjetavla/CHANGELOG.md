@@ -1,5 +1,10 @@
 # Ändringar
 
+## 0.11.1
+
+- **InfoMentor via Home Assistant.** Ny skolkälla som läser InfoMentor-integrationens (HACS) **Skoldag-sensor** i stället för en kalenderlänk: tavlan visar skolans riktiga start- och sluttid ("Skolan idag 08:30–15:30"). Sensorn byter dag varje natt och visar nästa skoldag, så tavlan minns tiden per datum och kan visa den även samma dag. Skolans kalender (simprov, utklädningsdag, turneringar) och nyheter hämtas också, och nyheter som "friluftsdag – ta med matsäck" blir påminnelser.
+- **Skoltiden räknas rätt.** En enstaka händelse i skolkalendern, som ett simprov, tas inte längre för hela skoldagen. Skolans egna händelser syns i Nu och Kommande 7 dagar.
+
 ## 0.11.0
 
 - **Bensin- och dieselbilar.** En Volvo XC60 (eller annan bil utan batteri) upptäcks nu via sin bränslesensor och visas med bränslemätare i liter, räckvidd, hemma/borta och värmestart. Tankens storlek ställs in i guiden (standard 70 L).
