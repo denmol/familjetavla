@@ -238,7 +238,7 @@ export function buildVacuums(cfg: Config, states: Map<string, HaState>, control:
       rooms,
       canRooms: rooms.length > 0 && roomCalls(v.brand, v.entityId, rawRooms(mapSt?.attributes, a), rooms.map((r) => r.id)).length > 0,
       can: {
-        start: has(FEATURE.start) || !features,
+        start: has(FEATURE.start) || has(1) || !features,
         pause: has(FEATURE.pause),
         stop: has(FEATURE.stop),
         home: has(FEATURE.home),

@@ -3,6 +3,7 @@ name: Bygg image
 # Bygger Docker-images till GitHub Container Registry och släpper sedan versionen:
 #   ghcr.io/<ägare>/familjetavla:<version> och :latest  (multi-arch, för docker compose)
 #   ghcr.io/<ägare>/familjetavla-amd64 / -aarch64     (för Home Assistant-tillägget)
+# Startas av en tagg v<version>, eller för hand (Run workflow på main) – då sätts taggen när versionen är släppt.
 on:
   push:
     tags: ["v*"]
@@ -11,14 +12,38 @@ on:
 permissions:
   contents: write
   packages: write
+  actions: read
 
 jobs:
-  # Unit tests plus the full end-to-end run of the real image. Nothing is published unless they pass.
+  # The fast unit tests here, and the full end-to-end run (every screen, the real image) is required to have passed
+  # already on this very commit – main runs it on every merge. Nothing is published unless both are green.
   checks:
     uses: ./.github/workflows/ci.yml
+    with:
+      fast: true
+
+  main-ci:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Kräv grön CI på samma commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # No run yet (a tag set a second after the merge) is waited for; no run at all within 5 minutes is an error.
+          for i in $(seq 1 180); do
+            r=$(gh api "repos/${{ github.repository }}/actions/workflows/ci.yml/runs?head_sha=${{ github.sha }}&event=push&per_page=1" --jq '.workflow_runs[0] | "\(.status) \(.conclusion)"' 2>/dev/null || echo "")
+            echo "$(date +%H:%M) CI på ${{ github.sha }}: ${r:-ingen körning ännu}"
+            case "$r" in
+              "completed success") exit 0 ;;
+              completed*) echo "CI på den här commiten blev inte grön – släpper inte."; exit 1 ;;
+              "" | null*) [ "$i" -ge 10 ] && { echo "Ingen CI-körning på commiten. Tagga en commit på main som CI har kört på."; exit 1; } ;;
+            esac
+            sleep 30
+          done
+          echo "CI blev inte klar inom 90 minuter."; exit 1
 
   image:
-    needs: checks
+    needs: [checks, main-ci]
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -85,18 +110,36 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: main
+          fetch-depth: 0
+      # The version is the tagged commit's, not main's: main may already be on the next version.
       - name: Pull the images once more – never announce a version that cannot be pulled
         run: |
-          V=$(node -p "require('./package.json').version")
+          V=$(git show "${{ github.sha }}:package.json" | node -p "JSON.parse(require('fs').readFileSync(0)).version")
+          echo "V=$V" >> "$GITHUB_ENV"
           for I in familjetavla familjetavla-amd64 familjetavla-aarch64; do
             docker manifest inspect "ghcr.io/${{ github.repository_owner }}/$I:$V" > /dev/null
           done
       - name: Raise the add-on version
         run: |
-          V=$(node -p "require('./package.json').version")
+          CUR=$(sed -n 's/^version: *"\{0,1\}\([^"]*\)"\{0,1\}/\1/p' familjetavla/config.yaml)
+          if [ "$(printf '%s\n%s\n' "$V" "$CUR" | sort -V | tail -1)" != "$V" ]; then
+            echo "config.yaml already says $CUR, newer than $V – leaving it"; exit 0
+          fi
           sed -i "s/^version: .*/version: \"$V\"/" familjetavla/config.yaml
           if git diff --quiet; then echo "config.yaml already says $V"; exit 0; fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git commit -am "Släpp $V till Home Assistant (images finns på ghcr)"
           git push origin HEAD:main
+      # A release started by hand (Actions → Bygg image → Run workflow on main) gets its tag here,
+      # on the commit that was built, like a tagged release. A tag pushed with GITHUB_TOKEN starts no
+      # new run, so the version is not built twice. An existing tag is left as it is.
+      - name: Tag the version
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          T="v$V"
+          if git ls-remote --exit-code --tags origin "refs/tags/$T" > /dev/null; then
+            echo "$T finns redan – lämnar den"; exit 0
+          fi
+          git tag "$T" "${{ github.sha }}"
+          git push origin "refs/tags/$T"

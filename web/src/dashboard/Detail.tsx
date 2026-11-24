@@ -1,9 +1,15 @@
-import { useState, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import type { Dashboard } from "../../../server/src/types";
+import { isoWeek } from "../../../server/src/time";
+import { usePagePrefs } from "../pageprefs";
+import { PageGear } from "./PageSheet";
+import { EditBar, setEditing } from "../hide";
 import { api } from "../api";
 import { Icon } from "../Icon";
-import { goBack, goHome } from "../route";
+import { Attachments, isBoardFile } from "./Attachments";
+import { RichText } from "./RichText";
+import { goBack, goHome, navigate } from "../route";
 import type { Actions } from "./Dashboard";
 import { Week, renderWidget } from "./Home";
 import { Custody } from "../widgets/custody";
@@ -19,36 +25,46 @@ export const PAGE_TITLES: Record<PageId, string> = {
   komihag: "Kom ihåg",
   inkop: "Inköpslista",
   hososs: "Hos oss",
-  veckan: "Kommande 7 dagar",
+  veckan: "Kalender",
   kort: "Alla kort",
 };
 
 /** Every page and tab: back, the title, and home – always in the same place. */
-export function PageBar({ title }: { title: string }) {
+/** `gearId`: this page's settings (text size) under a cog next to Hem. */
+export function PageBar({ title, gearId }: { title: string; gearId?: string }) {
+  // Leaving the page ends "Ta bort saker".
+  useEffect(() => () => setEditing(false), [title]);
   return (
+    <>
     <div className="page-bar">
       <button className="btn" onClick={goBack} aria-label="Tillbaka">
         <Icon name="chevronLeft" size={22} /> Tillbaka
       </button>
       <h1 className="grow">{title}</h1>
+      {gearId && <PageGear id={gearId} title={title} />}
       <button className="btn" onClick={goHome} aria-label="Till startsidan">
         <Icon name="home" size={22} /> Hem
       </button>
     </div>
+    <EditBar />
+    </>
   );
 }
 
-export function DetailPage({ page, data, actions }: { page: PageId; data: Dashboard; actions: Actions }) {
+/** `flat`: the new design is on (flat, and a light or dark theme – e-ink and mirror keep the old fitting). */
+export function DetailPage({ page, data, actions, flat = false }: { page: PageId; data: Dashboard; actions: Actions; flat?: boolean }) {
+  // The new design never shrinks a page to make it fit (the text got too small to read): it scrolls, at the size the page's cog says.
+  const { prefs } = usePagePrefs();
   return (
     <main className="detail-page">
-      <PageBar title={PAGE_TITLES[page]} />
-      <Fit className="detail-body" deps={[data, page]}>
+      <PageBar title={PAGE_TITLES[page]} gearId={`page:${page}`} />
+      <Fit className="detail-body" deps={[data, page]} noShrink={flat} base={prefs[`page:${page}`]?.size ?? 1}>
         {page === "maten" && <MealsPage data={data} actions={actions} />}
         {page === "skolan" && <SchoolPage data={data} actions={actions} />}
-        {page === "komihag" && <Reminders items={data.reminders} food={data.schoolFood} />}
+        {page === "komihag" && <Reminders items={data.reminders} food={data.schoolFood} data={data} actions={actions} />}
         {page === "inkop" && <Shopping data={data} actions={actions} />}
         {page === "hososs" && <CustodyPage data={data} />}
-        {page === "veckan" && <Week data={data} actions={actions} full />}
+        {page === "veckan" && <CalendarPage data={data} actions={actions} />}
         {page === "kort" && (
           <div className="cards-grid">
             {data.home.filter((w) => w.on && w.id !== "now" && w.id !== "week").map((w) => renderWidget(w.id, data, actions, true))}
@@ -59,7 +75,7 @@ export function DetailPage({ page, data, actions }: { page: PageId; data: Dashbo
   );
 }
 
-function MealsPage({ data, actions }: { data: Dashboard; actions: Actions }) {
+export function MealsPage({ data, actions }: { data: Dashboard; actions: Actions }) {
   return (
     <div className="stack">
       <div className="meals-grid">
@@ -98,10 +114,10 @@ function MealsPage({ data, actions }: { data: Dashboard; actions: Actions }) {
 
 const KIND_LABEL = { läxa: "Läxa", prov: "Prov", inlämning: "Inlämning", uppgift: "Uppgift" } as const;
 
-type Task = NonNullable<Dashboard["school"]>[number]["tasks"][number];
+export type Task = NonNullable<Dashboard["school"]>[number]["tasks"][number];
 
 /** Everything about one homework/test: when, the teacher's text, and a link to the school platform. */
-function TaskSheet({ task, child, onClose }: { task: Task; child: string; onClose: () => void }) {
+export function TaskSheet({ task, child, onClose }: { task: Task; child: string; onClose: () => void }) {
   return (
     <OnTop>
     <div className="overlay" onClick={onClose}>
@@ -122,7 +138,9 @@ function TaskSheet({ task, child, onClose }: { task: Task; child: string; onClos
             {task.time ? ` ${task.time}` : ""}
           </span>
         </div>
-        {task.detail ? <div className="task-detail">{task.detail}</div> : <p className="muted">Ingen beskrivning från skolan.</p>}
+        {task.detail ? <RichText className="task-detail" text={task.detail} /> : !task.files?.length && <p className="muted">Ingen beskrivning från skolan.</p>}
+        {/* The homework sheet right here: a PDF is read in the sheet, so nobody has to go to Vklass. */}
+        <Attachments files={task.files} />
         {task.url && (
           <a className="btn" href={task.url} target="_blank" rel="noreferrer" style={{ alignSelf: "flex-start" }}>
             Öppna i Vklass <Icon name="chevronRight" size={18} />
@@ -143,12 +161,12 @@ const todayKey = () => {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 };
 
+
 /** A news item from the school: all the text, pictures shown right in the sheet, and "Lägg i veckan". */
-function NewsSheet({ n, data, actions, onClose }: { n: News; data: Dashboard; actions: Actions; onClose: () => void }) {
+export function NewsSheet({ n, data, actions, onClose }: { n: News; data: Dashboard; actions: Actions; onClose: () => void }) {
   const [adding, setAdding] = useState(false);
   const kids = data.people.filter((p) => p.kind === "child");
   const [form, setForm] = useState({ date: todayKey(), time: "", end: "", title: n.title.slice(0, 80), who: n.who ?? "" });
-  const [broken, setBroken] = useState<string[]>([]);
   const set = (k: keyof typeof form, v: string) => setForm({ ...form, [k]: v });
   const save = () =>
     actions.run("Lägg i veckan", async () => {
@@ -183,17 +201,13 @@ function NewsSheet({ n, data, actions, onClose }: { n: News; data: Dashboard; ac
           {n.date && <span>{n.date}</span>}
         </div>
         {n.text ? <div className="news-text">{n.text}</div> : <p className="muted">Ingen text – se bilagan.</p>}
-        {n.files.map((f) =>
-          broken.includes(f.url) ? (
-            <a key={f.url} className="btn" href={f.url} target="_blank" rel="noreferrer" style={{ alignSelf: "flex-start" }}>
-              <Icon name="event" size={18} /> Öppna {f.name}
-            </a>
-          ) : (
-            <a key={f.url} href={f.url} target="_blank" rel="noreferrer" className="news-image">
-              <img src={f.url} alt={f.name} loading="lazy" onError={() => setBroken((b) => [...b, f.url])} />
-            </a>
-          ),
-        )}
+        {/* Files the board serves open inside it (a link would leave the app, which has no back button); only web addresses are links. */}
+        <Attachments files={n.files.filter(isBoardFile)} />
+        {n.files.filter((f) => !isBoardFile(f)).map((f) => (
+          <a key={f.url} className="btn" href={f.url} target="_blank" rel="noreferrer" style={{ alignSelf: "flex-start" }}>
+            <Icon name="link" size={18} /> Öppna {f.name}
+          </a>
+        ))}
         {!adding ? (
           <button className="btn primary" style={{ alignSelf: "flex-start" }} onClick={() => setAdding(true)}>
             <Icon name="plus" size={18} /> Lägg i veckan
@@ -319,6 +333,7 @@ function SchoolPage({ data, actions }: { data: Dashboard; actions: Actions }) {
   }
   const kid = kids.find((k) => k.personId === who) ?? kids[0];
   const today = kid.days.find((d) => d.today);
+  const selectedDay = today ?? kid.days.find((d) => d.lessons.length);
   return (
     <div className="stack">
       <div className="school-top">
@@ -336,7 +351,7 @@ function SchoolPage({ data, actions }: { data: Dashboard; actions: Actions }) {
       <div className="school-grid">
         <section className="card">
           <h2>{today ? "Idag" : "Nästa skoldag"}</h2>
-          <Lessons lessons={(today ?? kid.days.find((d) => d.lessons.length))?.lessons ?? []} />
+          {data.lessonView === "span" ? <DaySpan hours={selectedDay?.hours} lessons={selectedDay?.lessons ?? []} /> : <Lessons lessons={selectedDay?.lessons ?? []} />}
         </section>
         <section className="card">
           <h2>Läxor och uppgifter</h2>
@@ -363,10 +378,10 @@ function SchoolPage({ data, actions }: { data: Dashboard; actions: Actions }) {
               {d.lessons.length ? (
                 <>
                   <small className="muted">
-                    {d.lessons[0].start}–{d.lessons[d.lessons.length - 1].end}
-                    {d.lessons.some((l) => l.gym) ? " · Idrott" : ""}
+                    {data.lessonView === "span" ? `Slutar ${d.hours?.end ?? d.lessons[d.lessons.length - 1].end}` : `${d.hours?.start ?? d.lessons[0].start}–${d.hours?.end ?? d.lessons[d.lessons.length - 1].end}`}
+                    {(d.hours?.gym ?? d.lessons.some((l) => l.gym)) ? " · Idrott" : ""}
                   </small>
-                  <Lessons lessons={d.lessons} compact />
+                  {data.lessonView !== "span" && <Lessons lessons={d.lessons} compact />}
                 </>
               ) : (
                 <small className="muted">Ingen skola</small>
@@ -376,6 +391,21 @@ function SchoolPage({ data, actions }: { data: Dashboard; actions: Actions }) {
         </div>
       </section>
       {open && <TaskSheet task={open} child={kid.name} onClose={() => setOpen(null)} />}
+    </div>
+  );
+}
+
+/** Only when the school day starts and ends – for families who don't need every lesson. */
+function DaySpan({ lessons, hours }: { hours?: NonNullable<Dashboard["school"]>[number]["days"][number]["hours"]; lessons: NonNullable<Dashboard["school"]>[number]["days"][number]["lessons"] }) {
+  if (!lessons.length) return <small className="muted">Ingen skola</small>;
+  const gym = hours?.gym ?? lessons.some((l) => l.gym);
+  return (
+    <div className="day-span">
+      <div>
+        <small className="muted">Slutar</small>
+        <b>{hours?.end ?? lessons[lessons.length - 1]!.end}</b>
+      </div>
+      {gym && <span className="chip">Idrott – gympapåse</span>}
     </div>
   );
 }
@@ -443,6 +473,69 @@ function CustodyPage({ data }: { data: Dashboard }) {
         </section>
       ))}
       </div>
+    </div>
+  );
+}
+
+/** How far ahead the calendar goes: the board's week plus eight more. */
+const MAX_PAGE = 8;
+
+/** "14–20 nov · v. 46–47" for a page of days. */
+export function rangeLabel(days: Dashboard["days"]): string {
+  if (!days.length) return "";
+  const first = new Date(`${days[0]!.key}T12:00:00`);
+  const last = new Date(`${days[days.length - 1]!.key}T12:00:00`);
+  const month = (d: Date) => d.toLocaleDateString("sv-SE", { month: "short" }).replace(".", "");
+  const span = first.getMonth() === last.getMonth() ? `${first.getDate()}–${last.getDate()} ${month(last)}` : `${first.getDate()} ${month(first)} – ${last.getDate()} ${month(last)}`;
+  const w1 = isoWeek(first);
+  const w2 = isoWeek(last);
+  return `${span} · v. ${w1 === w2 ? w1 : `${w1}–${w2}`}`;
+}
+
+/**
+ * The week page: the coming seven days, and with Senare/Tidigare the weeks after – up to eight weeks ahead (#37).
+ * The days further on come from /api/calendar; the board itself keeps its seven days.
+ */
+export function CalendarPage({ data, actions }: { data: Dashboard; actions: Actions }) {
+  const [page, setPage] = useState(0);
+  const [later, setLater] = useState<Record<number, Dashboard["days"]>>({});
+  const [error, setError] = useState<string | null>(null);
+  useEffect(() => {
+    if (page === 0 || later[page]) return;
+    let alive = true;
+    setError(null);
+    api
+      .calendar(page)
+      .then((r) => alive && setLater((l) => ({ ...l, [page]: r.days })))
+      .catch((e) => alive && setError((e as Error).message || "Kunde inte hämta kalendern."));
+    return () => {
+      alive = false;
+    };
+  }, [page, later]);
+  const days = page === 0 ? data.days : later[page];
+  return (
+    <div className="stack cal-page">
+      <div className="cal-nav" role="group" aria-label="Bläddra i kalendern">
+        <button className="btn" onClick={() => setPage((p) => Math.max(0, p - 1))} disabled={page === 0} aria-label="Tidigare vecka">
+          <Icon name="chevronLeft" size={22} /> Tidigare
+        </button>
+        <b className="grow cal-range" aria-live="polite">
+          {page === 0 ? "Kommande 7 dagar" : days ? rangeLabel(days) : "Hämtar …"}
+        </b>
+        {page > 0 && (
+          <button className="btn" onClick={() => setPage(0)} aria-label="Tillbaka till den här veckan">
+            Nu
+          </button>
+        )}
+        <button className="btn" onClick={() => setPage((p) => Math.min(MAX_PAGE, p + 1))} disabled={page === MAX_PAGE} aria-label="Senare vecka">
+          Senare <Icon name="chevronRight" size={22} />
+        </button>
+        <button className="btn primary" onClick={() => navigate("/lagg-till")}>
+          <Icon name="plus" size={20} /> Lägg till
+        </button>
+      </div>
+      {error && page > 0 && !days && <p className="muted">{error}</p>}
+      {days && <Week data={page === 0 ? data : { ...data, days }} actions={actions} full />}
     </div>
   );
 }

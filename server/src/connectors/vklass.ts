@@ -212,7 +212,11 @@ export function parseVklassNewsData(html: string): VklassNews[] {
       const files = [
         ...(a.imagePath ? [{ name: "Bild", url: a.imagePath }] : []),
         ...(a.files ?? []).filter((f) => f?.url).map((f) => ({ name: f.nameWithExtension || f.name || f.fileName || "Bilaga", url: f.url! })),
-      ].map((f) => ({ name: f.name, url: new URL(f.url, CUSTODIAN).toString() }));
+        // Links written in the text itself ("Ladda ner veckobrevet", a PDF, a form) – kept as files to open.
+        ...textLinks(`${a.introText ?? ""} ${a.text ?? ""}`),
+      ]
+        .map((f) => ({ name: f.name, url: new URL(f.url, CUSTODIAN).toString() }))
+        .filter((f, i, all) => all.findIndex((x) => x.url === f.url) === i);
       const text = [a.introText, a.text].map((t) => htmlText(t ?? "")).filter(Boolean);
       const published = a.publishDate && !Number.isNaN(Date.parse(a.publishDate)) ? new Date(a.publishDate).toISOString() : undefined;
       return {
@@ -225,6 +229,26 @@ export function parseVklassNewsData(html: string): VklassNews[] {
         files: files.slice(0, 10),
       };
     });
+}
+
+/** Links in a news text's HTML: their text (or the file name) and where they go. */
+export function textLinks(html: string): { name: string; url: string }[] {
+  if (!/<a\s/i.test(html)) return [];
+  const $ = cheerio.load(html);
+  const out: { name: string; url: string }[] = [];
+  $("a[href]").each((_, a) => {
+    const href = ($(a).attr("href") ?? "").trim();
+    if (!/^(https?:\/\/|\/)/i.test(href)) return;
+    let file = href.split(/[?#]/)[0]!.split("/").pop() ?? "";
+    try {
+      file = decodeURIComponent(file);
+    } catch {
+      /* keep it as written */
+    }
+    const name = $(a).text().replace(/\s+/g, " ").trim() || file || "Länk";
+    out.push({ name: name.slice(0, 80), url: href });
+  });
+  return out.slice(0, 10);
 }
 
 function tagNames(tags: unknown): string[] {
@@ -448,6 +472,22 @@ type VklassItem = { title?: string; text?: string; start: string; end?: string; 
 export function htmlToText(html: string): string {
   if (!/<[a-z]/i.test(html)) return html.trim();
   const $ = cheerio.load(html.replace(/<br\s*\/?>/gi, "\n").replace(/<\/(p|div|h\d|ul|ol)>/gi, "\n\n").replace(/<li[^>]*>/gi, "\n• "));
+  // A table (the glossary of a homework) keeps its rows: "shame | synd/ skam", one line per row.
+  $("table").each((_, t) => {
+    const rows = $(t)
+      .find("tr")
+      .map((_i, tr) =>
+        $(tr)
+          .find("th,td")
+          .map((_j, c) => $(c).text().replace(/\s+/g, " ").trim())
+          .get()
+          .filter(Boolean)
+          .join(" | "),
+      )
+      .get()
+      .filter(Boolean);
+    $(t).replaceWith(`\n${rows.join("\n")}\n`);
+  });
   return $.root()
     .text()
     .replace(/[ \t\u00a0]+/g, " ")
@@ -461,7 +501,10 @@ export function htmlToText(html: string): string {
  * eventType 1 = lesson, 2 = assignment ("Uppgift": läxa, prov, inlämning), 8 = day off, 16 = teacher's planning.
  */
 export async function vklassEvents(s: VklassSession, studentId: string, from: Date, to: Date): Promise<(CalEvent & { task?: boolean; url?: string })[]> {
-  const list = (await vklassRawEvents(s, studentId, from, to)) as VklassItem[];
+  return mapVklassItems((await vklassRawEvents(s, studentId, from, to)) as VklassItem[]);
+}
+
+export function mapVklassItems(list: VklassItem[]): (CalEvent & { task?: boolean; url?: string })[] {
   return list
     .filter((e) => e.eventType !== 16 && !/plan/.test(e.className ?? ""))
     .map((e) => {
@@ -471,7 +514,8 @@ export async function vklassEvents(s: VklassSession, studentId: string, from: Da
       return {
         start,
         end: e.end ? new Date(e.end) : new Date(start.getTime() + 3_600_000),
-        allDay: Boolean(e.allDay) || !/T\d/.test(e.start),
+        // Vklass sends "2026-11-02 08:10" (space) – earlier "…T08:10". A date without a time is an all-day item.
+        allDay: Boolean(e.allDay) || !/[T ]\d{1,2}:\d{2}/.test(e.start),
         title: task ? raw : cleanLessonTitle(raw),
         location: typeof e.location === "string" && e.location.trim() ? e.location.trim() : undefined,
         description: e.text ? htmlToText(e.text) : undefined,
@@ -479,6 +523,68 @@ export async function vklassEvents(s: VklassSession, studentId: string, from: Da
         url: typeof e.detailUrl === "string" && e.detailUrl.startsWith("/") ? `${CUSTODIAN}${e.detailUrl}` : undefined,
       };
     });
+}
+
+/**
+ * The attachments of a task page (Calendar/Assignment/…): Vklass puts them in the page as JSON
+ * (`files.bind="[{name, url, …}]"`). Only addresses on vklass.se are kept.
+ */
+export function parseAssignmentFiles(html: string): { name: string; url: string }[] {
+  const m = /files\.bind="([^"]*)"/.exec(html) ?? /files\.bind='([^']*)'/.exec(html);
+  if (!m) return [];
+  const raw = m[1]!.replace(/&quot;/g, '"').replace(/&#x27;/g, "'").replace(/&amp;/g, "&");
+  try {
+    const list = JSON.parse(raw) as { name?: string; nameWithExtension?: string; url?: string; isFolder?: boolean }[];
+    return list.flatMap((f) => {
+      if (f.isFolder || !f.url) return [];
+      try {
+        const u = new URL(f.url);
+        if (u.protocol !== "https:" || !/(^|\.)vklass\.se$/.test(u.hostname)) return [];
+        return [{ name: f.nameWithExtension || f.name || "Bilaga", url: u.toString() }];
+      } catch {
+        return [];
+      }
+    });
+  } catch {
+    return [];
+  }
+}
+
+export type TaskKind = "läxa" | "prov" | "inlämning" | "uppgift";
+
+/** What Vklass itself calls the item: the line above the title on a task page ("Läxa, Svenska" -> läxa). */
+export function parseAssignmentKind(html: string): TaskKind | undefined {
+  const m = /<div class="text-tags">\s*([^<,]+?)\s*(?:,[^<]*)?<\/div>/.exec(html);
+  const word = m?.[1]?.toLowerCase();
+  if (!word) return undefined;
+  if (word.startsWith("läx")) return "läxa";
+  if (word.startsWith("prov") || word.startsWith("test")) return "prov";
+  if (word.startsWith("inlämn") || word.startsWith("redovis")) return "inlämning";
+  if (word.startsWith("uppgift")) return "uppgift";
+  return undefined;
+}
+
+export interface AssignmentInfo {
+  files: { name: string; url: string }[];
+  kind?: TaskKind;
+}
+
+const assignmentInfo = new Map<string, { at: number; info: AssignmentInfo }>();
+
+/** Attachments and the real kind of one task, remembered for six hours (a failed look is not remembered). */
+export async function vklassAssignmentInfo(s: VklassSession, taskUrl: string): Promise<AssignmentInfo> {
+  const hit = assignmentInfo.get(taskUrl);
+  if (hit && Date.now() - hit.at < 6 * 3_600_000) return hit.info;
+  try {
+    const res = await vklassFile(s, taskUrl);
+    if (!res.ok) return { files: [] };
+    const html = await res.text();
+    const info: AssignmentInfo = { files: parseAssignmentFiles(html), kind: parseAssignmentKind(html) };
+    assignmentInfo.set(taskUrl, { at: Date.now(), info });
+    return info;
+  } catch {
+    return { files: [] };
+  }
 }
 
 /** Lessons that mean "bring gym clothes". Vklass uses short codes like "idh". */

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildSchoolDays } from "./schoolday.js";
+import { buildSchoolDays, buildSchoolWeek, schoolEndsOn } from "./schoolday.js";
 import type { SourcedEvent } from "./sources.js";
 import type { Person } from "./types.js";
 
@@ -121,5 +121,22 @@ describe("Skolan idag – skolans egna tider", () => {
   it("still marks the day for gym clothes when the gym lesson is a post", () => {
     const evs = [day(20, 8, 30, 14, 0), { ...post(20, 10, 0, 11, 0, "Idrott"), gym: true }];
     expect(buildSchoolDays(evs, people, at(20, 7))![0]).toMatchObject({ start: "08:30", end: "14:00", gym: true });
+  });
+
+  it("uses reported hours in the week and pickup views and keeps lessons for each child", () => {
+    const events = [
+      day(20, 8, 30, 14, 0),
+      lesson("leo", 20, 13, 0, 15, 0),
+      { ...post(20, 16, 0, 17, 0, "Idrott"), gym: true },
+      lesson("ella", 20, 8, 0, 13, 0),
+    ];
+    const week = buildSchoolWeek(events, people, at(20, 7));
+    const leo = week.find((kid) => kid.personId === "leo")!.days.find((d) => d.today)!;
+    expect(leo.hours).toEqual({ start: "08:30", end: "14:00", gym: true });
+    expect(leo.lessons.map((item) => item.title)).toEqual(["Lektion"]);
+    expect(schoolEndsOn(events, people, at(20, 7), () => true)).toMatchObject([
+      { name: "Ella", end: "13:00" }, { name: "Leo", end: "14:00", gym: true },
+    ]);
+    expect(schoolEndsOn([post(20, 12, 0, 13, 0, "Utflykt")], people, at(20, 7), () => true)).toEqual([]);
   });
 });

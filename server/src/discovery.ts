@@ -1,7 +1,7 @@
 import { ha, type HaConn, type HaState } from "./connectors/ha.js";
-import { haSocket } from "./connectors/haws.js";
-import type { CarEntity, Config, NamedEntity, VacuumEntity } from "./types.js";
 import { brandOf } from "./vacuum.js";
+import { haSocket } from "./connectors/haws.js";
+import type { CarEntity, Config, NamedEntity, SecurityEntities, ApplianceEntities, VacuumEntity } from "./types.js";
 
 /**
  * Discover what a Home Assistant install already has, so the wizard can pre-fill cars,
@@ -145,9 +145,52 @@ export interface Discovery {
   buttons: { name: string; entityId: string }[];
   /** Speakers for Musik: Google/Nest, Chromecast, Sonos … – not TVs, not Spotify's own player. */
   speakers: NamedEntity[];
+  /** Säkerhet: cameras, locks, alarms, garage doors/gates and door/window sensors – cars' own locks and windows left out. */
+  security: SecurityEntities;
+  /** Städ: robot vacuums and mowers, with the battery sensor on the same device when there is one. */
   /** Robot vacuums with their map and the settings on the same device. */
   vacuums: (VacuumEntity & { maker?: string })[];
+  robots: (NamedEntity & { battery?: string })[];
+  /** Husgeråd: machines with a state sensor (Miele, Home Connect, SmartThings, LG …) or a power plug named after them. */
+  appliances: ApplianceEntities[];
   summary: string[];
+}
+
+const APPLIANCE_KINDS: [ApplianceEntities["kind"], RegExp][] = [
+  // Dishwasher first: "dishwasher" contains "washer".
+  ["dishwasher", /diskmaskin|dishwasher|geschirrsp|spülmaschine|opvaskemaskine|oppvaskmaskin/i],
+  ["dryer", /torktumlare|tumble|dryer|trockner|tørretumbler|torkskåp/i],
+  ["washer", /tvättmaskin|washing ?machine|washer|waschmaschine|vaskemaskine|vaskemaskin|tvättare/i],
+  ["oven", /\bugn\b|ugnen|oven|backofen|\bovn\b/i],
+];
+
+/** One appliance per device: its state, time left, progress and power – whichever it has. */
+export function findAppliances(all: HaEntityInfo[]): ApplianceEntities[] {
+  const groups = new Map<string, HaEntityInfo[]>();
+  for (const x of all) if (x.d && x.st !== "unavailable" && !x.o) groups.set(x.d, [...(groups.get(x.d) ?? []), x]);
+  const out: ApplianceEntities[] = [];
+  for (const [, ents] of groups) {
+    const who = `${ents[0]!.dn ?? ""} ${ents[0]!.mo ?? ""}`;
+    const kind = APPLIANCE_KINDS.find(([, re]) => re.test(who) || ents.some((e) => re.test(e.n)))?.[0];
+    if (!kind) continue;
+    const sensors = ents.filter((e) => domain(e.e) === "sensor");
+    const text = (e: HaEntityInfo) => !e.u && e.dc !== "timestamp" && !Number.isFinite(Number(e.st));
+    // Miele names its state sensor just like the machine ("Tvättmaskin"), so any text sensor is the fallback.
+    const status = sensors.find((e) => text(e) && /operation|status|state|tillstånd|machine|job|phase|fas\b|läge/i.test(`${e.n} ${e.e}`)) ?? sensors.find((e) => text(e) && e.dc === "enum") ?? sensors.find(text);
+    const remaining = sensors.find((e) => (["min", "h", "s"].includes(e.u ?? "") || e.dc === "timestamp" || e.dc === "duration") && /remain|rest|återst|aterst|kvar|finish|complet|end|klar|left/i.test(`${e.n} ${e.e}`));
+    const progress = sensors.find((e) => e.u === "%" && /progress|förlopp|framsteg/i.test(`${e.n} ${e.e}`));
+    const power = sensors.find((e) => (e.u === "W" || e.u === "kW") && (e.dc === "power" || /power|effekt/i.test(`${e.n} ${e.e}`)));
+    if (!status && !power) continue;
+    out.push({
+      name: ents[0]!.dn || kind,
+      kind,
+      ...(status ? { status: status.e } : {}),
+      ...(remaining ? { remaining: remaining.e } : {}),
+      ...(progress ? { progress: progress.e } : {}),
+      ...(power ? { power: power.e } : {}),
+    });
+  }
+  return out.slice(0, 10);
 }
 
 export function discover(all: HaEntityInfo[]): Discovery {
@@ -282,9 +325,32 @@ export function discover(all: HaEntityInfo[]): Discovery {
     // "Google Home Mini" in the area Kök reads as "Kök" – unless two speakers share the room.
     .map((x, _i, list) => ({ name: x.a && list.filter((y) => y.a === x.a).length === 1 ? x.a : x.n, entityId: x.e }));
 
+  // Cars have their own locks, windows and trunks (Tesla, Volvo …): those belong on the car card (carDevices above).
+  const ok = (x: HaEntityInfo) => !x.o && x.st !== "unavailable" && !(x.d && carDevices.has(x.d));
+  const named = (x: HaEntityInfo) => ({ name: x.n, entityId: x.e });
+  const security: SecurityEntities = {
+    cameras: all.filter((x) => domain(x.e) === "camera" && ok(x)).map(named),
+    locks: all.filter((x) => domain(x.e) === "lock" && ok(x)).map(named),
+    alarms: all.filter((x) => domain(x.e) === "alarm_control_panel" && ok(x)).map(named),
+    covers: all.filter((x) => domain(x.e) === "cover" && ok(x) && (x.dc === "garage" || x.dc === "gate")).map(named),
+    openings: all
+      .filter((x) => domain(x.e) === "binary_sensor" && ok(x) && ["door", "window", "garage_door", "opening"].includes(x.dc ?? ""))
+      .sort((a, b) => Number(b.dc === "door" || b.dc === "garage_door") - Number(a.dc === "door" || a.dc === "garage_door"))
+      .slice(0, 40)
+      .map(named),
+  };
+  const robots = all
+    .filter((x) => (domain(x.e) === "vacuum" || domain(x.e) === "lawn_mower") && ok(x))
+    .map((x) => {
+      const battery = x.d ? (byDevice.get(x.d) ?? []).find((y) => domain(y.e) === "sensor" && y.dc === "battery") : undefined;
+      return { name: x.n, entityId: x.e, ...(battery ? { battery: battery.e } : {}) };
+    });
+
+  const appliances = findAppliances(all);
+
   // ---- Robot vacuums: any vacuum.* – the map, battery, room and settings sit on the same device (or share its name)
   const vacuums: Discovery["vacuums"] = all
-    .filter((x) => domain(x.e) === "vacuum")
+    .filter((x) => domain(x.e) === "vacuum" && ok(x))
     .map((x) => {
       const mine = (x.d ? (byDevice.get(x.d) ?? []) : []).filter((y) => y.e !== x.e);
       // Custom map integrations sometimes make their own device: then the name ("Foppa …") ties it to the vacuum.
@@ -322,7 +388,12 @@ export function discover(all: HaEntityInfo[]): Discovery {
     priceSensors.length ? `Elpris-sensor: ${priceSensors[0].name}` : "",
     calendars.some((c) => c.waste) ? "Sopkalender hittad" : "",
     speakers.length ? `Högtalare: ${speakers.map((x) => x.name).join(", ")}` : "",
-    vacuums.length ? `Dammsugare: ${vacuums.map((x) => x.name).join(", ")}` : "",
+    security.cameras.length ? `${security.cameras.length} kamer${security.cameras.length > 1 ? "or" : "a"}` : "",
+    security.locks.length ? `Lås: ${security.locks.map((x) => x.name).join(", ")}` : "",
+    security.alarms.length ? `Larm: ${security.alarms.map((x) => x.name).join(", ")}` : "",
+    security.covers.length ? `Port: ${security.covers.map((x) => x.name).join(", ")}` : "",
+    robots.length ? `Robotar: ${robots.map((x) => x.name).join(", ")}` : "",
+    appliances.length ? `Husgeråd: ${appliances.map((x) => x.name).join(", ")}` : "",
   ].filter(Boolean);
 
   return {
@@ -337,7 +408,10 @@ export function discover(all: HaEntityInfo[]): Discovery {
     priceSensors,
     buttons,
     speakers,
+    security,
     vacuums,
+    robots,
+    appliances,
     summary,
   };
 }

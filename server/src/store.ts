@@ -34,7 +34,7 @@ export function defaultConfig(): Config {
     dashboard: {
       accent: "#34e0a1",
       theme: "auto",
-      home: HOME_WIDGETS.map((id) => ({ id, on: !["temps", "energy", "climates"].includes(id) })),
+      home: HOME_WIDGETS.map((id) => ({ id, on: !["temps", "energy", "climates", "chores", "homestatus", "todo"].includes(id) })),
       tabs: TAB_IDS.map((id) => ({ id, on: true })),
       nightFrom: "22:00",
       nightTo: "06:00",
@@ -112,6 +112,12 @@ export function loadConfig(): Config {
   const d = cached.dashboard;
   if (!Array.isArray(d.home)) d.home = [];
   if (!Array.isArray(d.tabs)) d.tabs = [];
+  // The test add-on used a dedicated vacuum tab before the household page.
+  const oldTab = d.tabs.find((t) => String(t.id) === "vacuums");
+  if (oldTab) {
+    if (d.tabs.some((t) => t.id === "household")) d.tabs = d.tabs.filter((t) => t !== oldTab);
+    else oldTab.id = "household";
+  }
   for (const k of ["people", "calendars", "integrations", "schedules"] as const) {
     if (!Array.isArray(cached[k])) (cached as unknown as Record<string, unknown[]>)[k] = [];
   }
@@ -127,8 +133,18 @@ export function loadConfig(): Config {
     const at = d.home.findIndex((w) => w.id === "meals");
     d.home.splice(at >= 0 ? at + 1 : d.home.length, 0, { id: "schoolday", on: true });
   }
+  // Snabbknappar on the home screen (#101): on, since the card only shows when a button is placed there.
+  if (!d.home.some((w) => w.id === "buttons")) {
+    const at = d.home.findIndex((w) => w.id === "lights");
+    d.home.splice(at >= 0 ? at + 1 : d.home.length, 0, { id: "buttons", on: true });
+  }
+  // Julkortet (Nordpol): finns för alla, och visas bara under julsäsongen om inte familjen valt "på" (christmas.ts).
+  if (!d.home.some((w) => w.id === "jul")) {
+    const at = d.home.findIndex((w) => w.id === "now");
+    d.home.splice(at >= 0 ? at + 1 : 0, 0, { id: "jul", on: true });
+  }
   for (const id of HOME_WIDGETS) if (!d.home.some((w) => w.id === id)) d.home.push({ id, on: false });
-  for (const id of TAB_IDS) if (!d.tabs.some((t) => t.id === id)) d.tabs.push({ id, on: true });
+  for (const id of TAB_IDS) if (!d.tabs.some((t) => t.id === id)) (id === "food" ? d.tabs.unshift.bind(d.tabs) : d.tabs.push.bind(d.tabs))({ id, on: true });
   return cached;
 }
 
@@ -214,16 +230,31 @@ export interface LocalItem {
   id: string;
   name: string;
   done: boolean;
+  /** Gjord av ett erbjudande: butikens kopplings-id och erbjudandets id (så ICA visar priset på raden). */
+  offer?: { store: string; id: string };
 }
 
 export interface LocalFile {
   shopping?: LocalItem[];
+  /** Varor som skickats till en butik: radens namn (gemener) → butiken och när (för märket i inköpslistan). */
+  sentToStore?: Record<string, { store: string; at: string }>;
   /** Veckans middagar: YYYY-MM-DD → "Tacos". */
   dinners?: Record<string, string>;
   /** Hur ofta en middag valts (för favoriter) och vad man brukar handla till den. */
   dinnerStats?: Record<string, { count: number; shopping?: string; last: string }>;
+  /** Händelser som utgår (bara på tavlan): travelKey → dagen (YYYY-MM-DD), för att rensa gamla. */
+  cancelled?: Record<string, string>;
+  /** Musik: the volume last chosen on the board per speaker (0–100), used again when music starts there. */
+  volumes?: Record<string, number>;
   /** "Saknas på hyllan" per barn: ["Blöjor", "Extrakläder"]. */
   shelf?: Record<string, string[]>;
+  /** Sysslor barnen ska göra (se chores.ts) och vilka som är avbockade per dag (YYYY-MM-DD → id:n). */
+  chores?: import("./chores.js").Chore[];
+  choreDone?: Record<string, string[]>;
+  /** Snällistan i julkortet (se julnice.ts). */
+  julNice?: import("./julnice.js").JulNiceItem[];
+  /** Senaste version som vi meddelat om (så att samma version bara ger en notis). */
+  updateNotified?: string;
   /** Dit/hem-val per händelse, nyckel = travelKey(). */
   travel?: Record<string, import("./types.js").TravelChoice>;
   /** Andra som skjutsar ("Marina", "Ola"), senast använd först – snabbval i Planera veckan. */
@@ -234,6 +265,8 @@ export interface LocalFile {
   ownEvents?: OwnEvent[];
   /** Sjuk/VAB per barn: dagar (YYYY-MM-DD) då förskola, skola och aktiviteter stryks. */
   sick?: Record<string, string[]>;
+  /** Lov/ledigt per barn: dagar (YYYY-MM-DD) då skola, förskola och hämtning/lämning utgår (träningar finns kvar). */
+  leave?: Record<string, string[]>;
 }
 
 export interface OwnEvent {
@@ -246,6 +279,8 @@ export interface OwnEvent {
   end?: string;
   title: string;
   personId?: string;
+  /** Flera personer (Emil och Alicia); hamnar i Gemensamt med deras färgprickar. */
+  personIds?: string[];
   note?: string;
 }
 

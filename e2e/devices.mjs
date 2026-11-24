@@ -21,30 +21,39 @@ const LIST = [
   ["iPhone", "iPhone 15 Pro", false],
   ["iPhone SE", "iPhone SE (3rd gen)", false],
   ["iPhone liggande", "iPhone 15 Pro landscape", false],
+  // A MagicMirror-style screen behind glass: Full HD on its side, no touch.
+  ["Spegel 1080×1920", { viewport: { width: 1080, height: 1920 }, deviceScaleFactor: 1, isMobile: false, hasTouch: false, userAgent: "Mozilla/5.0 (X11; Linux aarch64) Chrome/130 Safari/537.36" }, true],
 ];
 // PART=1/3 runs every third device (for running in parallel).
 const [partNo, parts] = (process.env.PART ?? "1/1").split("/").map(Number);
 const only = process.env.ONLY ? new RegExp(process.env.ONLY, "i") : null;
-const DEVICES = LIST.filter((_, i) => i % parts === partNo - 1).filter(([n]) => !only || only.test(n));
+// The new (flat) design is made for landscape screens; portrait is not supported there for now (decided 2026-11-04).
+const flatNoPortrait = process.env.DESIGN === "flat";
+const DEVICES = LIST.filter((_, i) => i % parts === partNo - 1).filter(([n]) => !only || only.test(n)).filter(([n]) => !(flatNoPortrait && /stående|Spegel/.test(n)));
 const ROUTES = [
   ["guide-hem", "#/setup/hem"], ["guide-familj", "#/setup/familj"], ["guide-kalendrar", "#/setup/kalendrar"], ["guide-omsorg", "#/setup/familj", "care4"], ["guide-skola", "#/setup/skola"], ["guide-huset", "#/setup/huset"], ["guide-musik", "#/setup/huset", "radio"], ["guide-edlevo", "#/setup/skola", "edlevo"], ["guide-startskarm", "#/setup/visning"], ["guide-klart", "#/setup/klart"],
-  ["planera", "", "plan"], ["handelse", "", "event"], ["skjuts", "#/sida/veckan", "sport"], ["uppgift", "#/sida/skolan", "task"], ["nyhet", "#/sida/skolan", "news"], ["nyhet-vecka", "#/sida/skolan", "newsadd"], ["lagg-till", "#/lagg-till"],
-  ["start", ""], ["veckan", "#/sida/veckan"], ["kort", "#/sida/kort"], ["maten", "#/sida/maten"], ["skolan", "#/sida/skolan"], ["komihag", "#/sida/komihag"], ["inkop", "#/sida/inkop"], ["hososs", "#/sida/hososs"], ["energi", "#/flik/energy"], ["bil", "#/flik/cars"], ["ljus", "#/flik/lights"], ["musik", "#/flik/music"], ["musik-ovriga", "#/flik/music", "otherStations"], ["eink-start", "?tema=eink"], ["eink-veckan", "?tema=eink#/sida/veckan"], ["eink-ljus", "?tema=eink#/flik/lights"]];
+  ["planera", "", "plan"], ["handelse", "", "event"], ["handelse-utgar", "", "eventCancel"], ["skjuts", "#/sida/veckan", "sport"], ["uppgift", "#/sida/skolan", "task"], ["nyhet", "#/sida/skolan", "news"], ["nyhet-vecka", "#/sida/skolan", "newsadd"], ["lagg-till", "#/lagg-till"],
+  ["start", ""], ["ordna", "", "arrange"], ["veckan", "#/sida/veckan"], ["kort", "#/sida/kort"], ["maten", "#/sida/maten"], ["skolan", "#/sida/skolan"], ["skolan-tider", "?lektioner=tider#/sida/skolan"], ["komihag", "#/sida/komihag"], ["komihag-nyhet", "#/sida/komihag", "reminderNews"], ["inkop", "#/sida/inkop"], ["hososs", "#/sida/hososs"], ["energi", "#/flik/energy"], ["bil", "#/flik/cars"], ["ljus", "#/flik/lights"], ["musik", "#/flik/music"], ["musik-ovriga", "#/flik/music", "otherStations"], ["musik-spotify", "#/flik/music", "library"], ["musik-poddar", "#/flik/music", "podcasts"], ["musik-spellista", "#/flik/music", "playlist"], ["musik-utan-ma", "?utan-ma#/flik/music", "noAssistant"], ["sakerhet", "#/flik/security"], ["sakerhet-kamera", "#/flik/security", "bigCamera"], ["hushall", "#/flik/household"], ["jul", "#/flik/jul"], ["eink-start", "?tema=eink"], ["eink-veckan", "?tema=eink#/sida/veckan"], ["eink-ljus", "?tema=eink#/flik/lights"], ["spegel-start", "?tema=spegel"]];
 // ROUTES_ONLY=ljus,uppgift checks just those views (quick local runs).
 const routeOnly = process.env.ROUTES_ONLY?.split(",");
 if (routeOnly) ROUTES.splice(0, ROUTES.length, ...ROUTES.filter(([r]) => routeOnly.includes(r)));
+// The new design has a fixed start page (no "Ordna startsidan" by holding a card), and no e-ink / mirror themes.
+if (process.env.DESIGN === "flat") ROUTES.splice(0, ROUTES.length, ...ROUTES.filter(([r]) => r !== "ordna" && !/^(eink|spegel)-/.test(r)));
 const report = [];
 const line = (row) => {
   if (row.issues.length || row.more?.length) console.log(`${row.issues.length ? "FEL " : "obs "} ${row.device} · ${row.route}: ${row.issues.join("; ")} ${row.more?.length ? `[knappar: ${row.more.join(" / ")}]` : ""}`);
 };
-for (const [theme, clock] of [["ljust", "2026-10-18T16:00:00+02:00"], ["mörkt", "2026-10-18T20:30:00+02:00"]])
+// THEME=ljust|mörkt runs only that theme (half the time, for quick checks).
+for (const [theme, clock] of [["ljust", "2026-10-18T16:00:00+02:00"], ["mörkt", "2026-10-18T20:30:00+02:00"]].filter(([t]) => !process.env.THEME || process.env.THEME === t))
 for (const [name0, dev, tablet] of DEVICES) {
   const name = `${name0} ${theme}`;
-  const d = devices[dev];
+  const d = typeof dev === "string" ? devices[dev] : dev;
   // A fresh browser per device keeps memory in check over 300 views.
   const b = await chromium.launch({ executablePath: process.env.CHROMIUM_PATH || undefined });
   const ctx = await b.newContext({ ...d, locale: "sv-SE", timezoneId: "Europe/Stockholm" });
   const p = await ctx.newPage();
+  // SCALE=0.6|1|1.3 runs everything at that "Storlek" setting (60–130 %): nothing may cover anything or scroll at any of them.
+  if (process.env.SCALE) await p.addInitScript((v) => { try { localStorage.setItem("familjetavla.uiscale", v); } catch {} }, process.env.SCALE);
   const errors = [];
   let at = "";
   p.on("pageerror", (e) => errors.push(`${e.message} (${at}) ${(e.stack ?? "").split("\n")[1]?.trim() ?? ""}`));
@@ -55,18 +64,28 @@ for (const [name0, dev, tablet] of DEVICES) {
    try {
     at = r;
     await p.goto("about:blank");
-    await p.goto(URL + hash);
+    // DESIGN=flat runs the same checks in the new flat design (the demo reads ?design=flat).
+    const D = process.env.DESIGN;
+    const target = !D ? hash : hash.includes("?") ? hash.replace("?", `?design=${D}&`) : `?design=${D}${hash}`;
+    await p.goto(URL + target);
     // Measure like a real board: the demo's extra header buttons don't exist there.
     await p.addStyleTag({ content: ".demo-only{display:none!important}" });
     await p.waitForTimeout(1400);
-    if (open === "plan") await p.getByRole("button", { name: /Planera veckan/ }).first().click();
-    if (open === "event") await p.locator(".now-item").first().click();
+    if (r === "hushall") {
+      await p.getByRole("button", { name: /^Foppa ·/ }).click();
+      const panel = p.getByRole("dialog", { name: "Foppa" });
+      await panel.locator(".vac-map img").waitFor({ state: "visible" });
+      await panel.getByRole("button", { name: "Stäng" }).click();
+      await panel.waitFor({ state: "hidden" });
+    }
+    if (open === "plan") await p.getByRole("button", { name: /Planera/ }).first().click();
+    if (open === "event") await p.locator(".now-item, .hf-row").first().click();
     if (open === "edlevo") {
       await p.getByRole("button", { name: /Har ni Edlevo/ }).click();
       await p.locator(".edlevo-help").scrollIntoViewIfNeeded();
     }
     if (open === "sport") {
-      await p.locator(".event", { hasText: "F14" }).first().click();
+      await p.locator(".event, .wk-evt", { hasText: "F14" }).first().click();
       await p.locator(".event-text").scrollIntoViewIfNeeded();
     }
     if (open === "care4") {
@@ -88,10 +107,55 @@ for (const [name0, dev, tablet] of DEVICES) {
       await p.getByRole("button", { name: "Sök", exact: true }).click();
       await p.locator(".station-hits").scrollIntoViewIfNeeded();
     }
+    if (open === "arrange") {
+      // Hold a card: the home screen goes into "Ordna startsidan".
+      const card = p.locator(".wsize > .card").first();
+      await card.scrollIntoViewIfNeeded();
+      const b = await card.boundingBox();
+      // A card taller than the screen is centred, so its top can be off screen: hold the visible part.
+      await p.mouse.move(b.x + b.width / 2, Math.max(b.y, 0) + 20);
+      await p.mouse.down();
+      await p.waitForTimeout(800);
+      await p.mouse.up();
+      await p.locator(".arrange-bar").waitFor();
+      // On a phone, look at the whole list like a person scrolling down it.
+      if (!tablet) await p.evaluate(() => window.scrollTo(0, document.documentElement.scrollHeight));
+    }
     if (open === "otherStations") {
+      await p.getByRole("button", { name: /Fler kanaler/ }).click();
       await p.getByRole("radio", { name: "Övriga" }).click();
+      await p.locator(".station-row").first().waitFor();
       // On a phone the list is further down: scroll there like a person would.
       await p.evaluate(() => window.scrollTo(0, document.documentElement.scrollHeight));
+    }
+    if (open === "playlist") {
+      await p.getByRole("tab", { name: /Spotify|Bibliotek/ }).click();
+      // The board remembers the shelf open last (Poddar from the view before): pick the playlists.
+      await p.getByRole("tab", { name: "Spellistor", exact: true }).click();
+      await p.locator(".cover").first().click();
+      await p.locator(".track-row").first().waitFor();
+      await p.evaluate(() => window.scrollTo(0, document.documentElement.scrollHeight));
+    }
+    if (open === "library" || open === "podcasts") {
+      await p.getByRole("tab", { name: /Spotify|Bibliotek/ }).click();
+      await p.getByRole("tab", { name: open === "podcasts" ? "Poddar" : "Hem", exact: true }).click();
+      await p.locator(".cover").first().waitFor();
+      await p.evaluate(() => window.scrollTo(0, document.documentElement.scrollHeight));
+    }
+    if (open === "noAssistant") {
+      await p.getByRole("tab", { name: /Spotify|Bibliotek/ }).click();
+      await p.locator(".lib-setup .btn").first().waitFor();
+      await p.evaluate(() => window.scrollTo(0, document.documentElement.scrollHeight));
+    }
+    if (open === "eventCancel") {
+      await p.locator(".event, .wk-evt").first().click();
+      await p.getByRole("button", { name: "Utgår" }).click();
+    }
+    if (open === "reminderNews") await p.locator(".reminder-link").first().click();
+    if (open === "bigCamera") {
+      await p.locator(".camera").first().click();
+      // On a phone, look at the whole page like a person scrolling down it.
+      if (!tablet) await p.evaluate(() => window.scrollTo(0, document.documentElement.scrollHeight));
     }
     if (open === "task") await p.locator(".task-row", { hasText: "Prov i NO" }).first().click();
     if (open) await p.waitForTimeout(600);
@@ -99,7 +163,9 @@ for (const [name0, dev, tablet] of DEVICES) {
     await p.waitForTimeout(300);
     const m = await p.evaluate((tablet) => {
       const de = document.documentElement;
-      const out = { covered: [], overlap: [], cut: [], more: [...document.querySelectorAll(".fit-more")].map((m) => m.textContent.trim()), pageScroll: de.scrollHeight - window.innerHeight, sideways: de.scrollWidth - window.innerWidth, behind: [], overflow: [], scales: [], small: 0 };
+      // The page can be zoomed as a whole (skärmstorlek): scroll sizes are then in the page's own pixels, the window's in screen pixels.
+      const pageZoom = parseFloat(getComputedStyle(de).zoom) || 1;
+      const out = { covered: [], overlap: [], cut: [], more: [...document.querySelectorAll(".fit-more")].map((m) => m.textContent.trim()), pageScroll: Math.round(de.scrollHeight * pageZoom - window.innerHeight), sideways: Math.round(de.scrollWidth * pageZoom - window.innerWidth), behind: [], overflow: [], scales: [], small: 0 };
       const bar = document.querySelector(".tabbar")?.getBoundingClientRect();
       const overlay = document.querySelector(".overlay");
       if (bar && overlay) {
@@ -138,7 +204,13 @@ for (const [name0, dev, tablet] of DEVICES) {
         range.selectNodeContents(n);
         for (let r of range.getClientRects()) {
           if (r.width < 2 || r.height < 2) continue;
-          if (r.bottom <= 0 || r.top >= innerHeight || r.right <= 0 || r.left >= innerWidth) continue;
+          // A text that is only a sliver inside the screen (a fraction of a pixel after scrolling) counts as outside: its centre cannot be probed.
+          if (r.bottom < 2 || r.top > innerHeight - 2 || r.right < 2 || r.left > innerWidth - 2) continue;
+          // Mostly scrolled past the top or bottom edge (a big number with only its foot showing): what is probed there is the
+          // next line, not something covering it.
+          if (Math.min(r.bottom, innerHeight) - Math.max(r.top, 0) < r.height / 3) continue;
+          // A radio station's scrolling text slides on purpose; screen-reader-only text is not meant to be seen.
+          if (el.closest(".ticker, .sr-only")) continue;
           // Hidden by a fit area or a scroll box? Then it is not shown – skip.
           let clipped = false;
           for (let a = el; a && a !== document.body; a = a.parentElement) {
@@ -150,7 +222,9 @@ for (const [name0, dev, tablet] of DEVICES) {
               // Partly outside its box (cut text) – unless that box shows an ellipsis on purpose.
               const cut = r.bottom > cr.bottom + 2 || r.top < cr.top - 2 || ((r.right > cr.right + 2 || r.left < cr.left - 2) && s2.textOverflow !== "ellipsis" && cs.textOverflow !== "ellipsis");
               const scroller = s2.overflowY === "auto" || s2.overflowY === "scroll";
-              if (cut && !scroller && !a.classList.contains("fit")) out.cut.push(n.textContent.trim().slice(0, 24));
+              if (cut && !scroller && !a.classList.contains("fit")) out.cut.push(`${n.textContent.trim().slice(0, 24)} i ${String(a.className?.baseVal ?? a.className ?? "").split(" ").filter(Boolean).slice(0, 2).join(".") || a.tagName.toLowerCase()}`);
+              // Inside a scroll box the rest is reached by scrolling: the boxes around it do not cut it.
+              if (scroller) break;
             }
           }
           if (clipped) continue;
@@ -185,10 +259,17 @@ for (const [name0, dev, tablet] of DEVICES) {
           if (w > 3 && h > 3 && w * h > 0.25 * Math.min(A.r.width * A.r.height, B.r.width * B.r.height)) out.overlap.push(`"${A.t}" / "${B.t}"`);
         }
       }
+      // In the new design tabs and pages scroll at full size instead of shrinking (Emil 2026-11-08: the shrunk text was
+      // unreadable), so their overflow is the intended scrolling there, not a fault. The classic design still fits.
+      // The same goes for the start page's boxes: the week never shrinks and the boxes at the top stop at 85 %; they scroll.
+      const flatOn = document.documentElement.dataset.design === "flat";
       for (const f of document.querySelectorAll(".fit")) {
         const z = Number(f.firstElementChild?.style.zoom || 1);
         out.scales.push(Math.round(z * 100));
-        if (f.classList.contains("fit-overflow")) out.overflow.push(f.className.replace("fit", "").trim());
+        // Julkortet (Nordpol) staplar sina delar i stående läge och är byggt för att rullas; nedskalat till 70 % blir texten för liten, så fliken Jul rullar även i det klassiska utseendet.
+        const julScrolls = f.classList.contains("tab-body") && Boolean(document.querySelector(".jul-page"));
+        const scrollsByDesign = julScrolls || flatOn && (f.classList.contains("detail-body") || f.classList.contains("tab-body") || f.classList.contains("week-body") || f.classList.contains("hf-fit"));
+        if (f.classList.contains("fit-overflow") && !scrollsByDesign) out.overflow.push(f.className.replace("fit", "").trim());
       }
       for (const btn of document.querySelectorAll("button, a.btn")) {
         const r = btn.getBoundingClientRect();
@@ -205,7 +286,8 @@ for (const [name0, dev, tablet] of DEVICES) {
     if (m.overlap.length) issues.push(`text på text: ${[...new Set(m.overlap)].slice(0, 4).join(" | ")}`);
     if (m.cut.length) issues.push(`kapad text: ${[...new Set(m.cut)].slice(0, 4).join(" | ")}`);
     // "Alla kort" and "Kommande 7 dagar" are the show-everything pages: scrolling there is allowed as a last resort.
-    if (tablet && m.overflow.length && !["kort", "veckan"].includes(r)) issues.push(`ryms inte ens på 70 %: ${m.overflow.join(", ")}`);
+    // By the page (hash), not the route's name: "skjuts" is the week page with a sheet open.
+    if (tablet && m.overflow.length && !/#\/sida\/(kort|veckan)\b/.test(hash)) issues.push(`ryms inte ens på 70 %: ${m.overflow.join(", ")}`);
     const minScale = m.scales.length ? Math.min(...m.scales) : 100;
     const row = { device: name, route: r, issues, minScale, small: m.small, more: m.more };
     report.push(row);

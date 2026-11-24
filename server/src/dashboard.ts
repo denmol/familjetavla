@@ -1,14 +1,22 @@
+import { boardFiles } from "./files.js";
+import { audience } from "./audience.js";
+import { buildAppliances } from "./appliances.js";
+import { buildVacuums } from "./vacuum.js";
+import { buildRobots, buildSecurity } from "./security.js";
 import { energyLive, energyToday, todaySeries } from "./energy.js";
+import { findAutoModes, findSmartCharging } from "./smartcharging.js";
+import { choresForToday } from "./chores.js";
+import { christmasView } from "./christmas.js";
 import { buildSchoolNews, newsReminders, newsTripReminders, ownCalendarEvents } from "./news.js";
-import { updateAvailable } from "./updates.js";
-import { buildSchoolDays, buildSchoolWeek } from "./schoolday.js";
+import { updateAvailable, versionInfo } from "./updates.js";
+import { buildSchoolDays, buildSchoolWeek, schoolEndsOn } from "./schoolday.js";
 import { cached } from "./cache.js";
 import { cheapestBlock, priceLevel, type HourPrice } from "./connectors/elpris.js";
 import { ha, haConnection, type HaState } from "./connectors/ha.js";
 import { buildMusic } from "./music.js";
-import { buildVacuums } from "./vacuum.js";
+import { libraryName } from "./musicAssistant.js";
 import { haSocket } from "./connectors/haws.js";
-import { applySick, loadSick } from "./sick.js";
+import { applyLeave, applySick, loadLeave, loadSick } from "./sick.js";
 import { coldestBetween, forecast, rainBetween, skyNow, sunToday, tempNow, weatherSummary, type Forecast } from "./connectors/weather.js";
 import { carAnchor } from "./discovery.js";
 import { careTimesFor, custodyStatus, isHome } from "./custody.js";
@@ -18,16 +26,17 @@ import {
   collectSchool,
   collectWaste,
   groceryIntegration,
+  groceryIntegrations,
   hasPriceExtras,
   totalPrice,
   type SourceError,
   type SchoolData,
   type SourcedEvent,
 } from "./sources.js";
-import { listPhotos, loadConfig, loadLocalList } from "./store.js";
+import { listPhotos, loadConfig, loadLocal, loadLocalList } from "./store.js";
 import { buildPlan, careAt, needsAttention } from "./plan.js";
-import { buildMeals, loadDinners, loadShelf, mealFavorites, sameAsLunch } from "./meals.js";
-import { isCare, knownDrivers, loadTravel, resolveTravel, travelOptions, travelSummary, wantsTravel } from "./travel.js";
+import { buildMeals, dinnersFromEvents, loadDinners, loadShelf, mealFavorites, sameAsLunch } from "./meals.js";
+import { isCare, knownDrivers, travelKey, loadTravel, resolveTravel, travelOptions, travelSummary, wantsTravel } from "./travel.js";
 import {
   addDays,
   daysBetween,
@@ -42,11 +51,12 @@ import {
   startOfDay,
   isoWeekday,
 } from "./time.js";
-import type { ActivityIcon, CalendarSource, Config, Control, DashDay, DashEvent, Dashboard, Person, Reminder, TravelChoice } from "./types.js";
+import type { ActivityIcon, CalendarSource, Config, Control, DashDay, DashEvent, Dashboard, Person, PriceBar, Reminder, TravelChoice } from "./types.js";
 
 const MIN = 60_000;
 const WASTE_COLOR = "#9aa0bf";
-const FAMILY_COLOR = "#34e0a1";
+// Neutral: a colour on the board means a person, and the family's things are no one's (the old green was also a person colour).
+const FAMILY_COLOR = "#8b9bb0";
 
 /**
  * Swap calendar: an all-day event with the child's name means "here" that day, the name plus
@@ -157,6 +167,7 @@ export function activityIcon(title: string, category: DashEvent["category"]): Ac
 
 function toDash(ev: SourcedEvent, people: Map<string, Person>, travel?: TravelCtx): DashEvent {
   const p = ev.personId ? people.get(ev.personId) : undefined;
+  const aud = audience(ev, people);
   return {
     ...(travel && wantsTravel(ev, people) ? { travel: resolveTravel(ev, people, travel.calendars.get(ev.sourceId), travel.saved) } : {}),
     time: ev.allDay ? "" : hhmm(ev.start),
@@ -164,13 +175,16 @@ function toDash(ev: SourcedEvent, people: Map<string, Person>, travel?: TravelCt
     title: ev.title,
     color: p?.color ?? FAMILY_COLOR,
     who: p?.name ?? "",
+    ...(aud.length ? { whoAll: aud } : {}),
     initial: p ? initialsOf(p, people) : undefined,
     category: ev.category,
     icon: ev.gym ? "gym" : activityIcon(`${ev.title} ${ev.sourceName ?? ""}`, ev.category),
     location: ev.location,
     description: cleanDescription(ev.description, ev.title),
-    ...(ev.sourceId === "own" && ev.uid ? { ownId: ev.uid } : {}),
-    ...(p?.kind === "child" ? { sick: { personId: p.id, date: dayKey(ev.start), on: ev.sourceId === "sick" } } : {}),
+    // The homework sheet of a school task (PDF or picture) opens right in the event's sheet.
+    ...(boardFiles(ev.files) ? { files: boardFiles(ev.files) } : {}),
+    ...(ev.sourceId === "own" && ev.uid ? { ownId: ev.uid } : ev.sourceId !== "sick" && ev.sourceId !== "leave" ? { cancelKey: travelKey(ev) } : {}),
+    ...(p?.kind === "child" && ev.sourceId === "leave" ? { leave: { personId: p.id, date: dayKey(ev.start) } } : p?.kind === "child" ? { sick: { personId: p.id, date: dayKey(ev.start), on: ev.sourceId === "sick" } } : {}),
   };
 }
 
@@ -232,68 +246,66 @@ export interface Family {
   /** `all` plus generated förskola/fritids days. */
   withCare: SourcedEvent[];
   travelCtx: TravelCtx;
+  /** The week's dinners from calendars of the type "Middag" (a dinner set on the board itself wins). */
+  calendarDinners: Record<string, string>;
 }
 
-export async function gatherFamily(cfg: Config, now: Date, errors: SourceError[]): Promise<Family & { schoolFood: SchoolData["food"]; schoolNews: SchoolData["news"]; hiddenSick: SourcedEvent[] }> {
+/** How far ahead calendars and school are fetched: the calendar page's eight weeks after the board's one. */
+const FETCH_DAYS = 63;
+
+/** `days`: how far ahead (7 for the board; the calendar page asks for more, see buildCalendar). */
+export async function gatherFamily(cfg: Config, now: Date, errors: SourceError[], days = 7): Promise<Family & { schoolFood: SchoolData["food"]; schoolNews: SchoolData["news"]; hiddenSick: SourcedEvent[] }> {
   const today = startOfDay(now);
-  const horizon = addDays(today, 7);
-  const [calEvents, school] = await Promise.all([collectCalendars(cfg, today, horizon, errors), collectSchool(cfg, today, horizon, errors)]);
+  const horizon = addDays(today, days);
+  // Calendars and school are always fetched for the same nine weeks (the calendar page's reach) and cut to `days`
+  // here: one cache entry and one school login for the board, the calendar and a child's own view alike.
+  const window = addDays(today, FETCH_DAYS);
+  const within = <T extends { start: Date }>(e: T) => e.start < horizon;
+  const [calAll, schoolAll] = await Promise.all([collectCalendars(cfg, today, window, errors), collectSchool(cfg, today, window, errors)]);
+  const calEvents = calAll.filter(within);
+  const school = { ...schoolAll, events: schoolAll.events.filter(within) };
   const swapCal = cfg.household.custodyCalendarId;
   const people = new Map(withSwapCalendar(cfg.people, calEvents.filter((e) => e.sourceId === swapCal)).map((p) => [p.id, p]));
   const children = [...people.values()].filter((p) => p.kind === "child");
-  const all = [...calEvents.filter((e) => e.sourceId !== swapCal), ...school.events, ...ownCalendarEvents()];
-  const careEvents = buildCareEvents([...people.values()], school.care, all, today, 7);
+  // "Utgår": events the family struck on the board are gone everywhere – week, Nu, reminders, phone.
+  const cancelled = loadLocal().cancelled ?? {};
+  const kept = (e: SourcedEvent) => !cancelled[travelKey(e)];
+  // A calendar of the type "Middag" holds the week's dinners: they become the day's dinner, not calendar events.
+  const calendarDinners = dinnersFromEvents(calEvents.filter((e) => e.category === "dinner" && e.sourceId !== swapCal && kept(e)));
+  const all = [...calEvents.filter((e) => e.sourceId !== swapCal && e.category !== "dinner"), ...school.events, ...ownCalendarEvents()].filter(kept);
+  const careEvents = buildCareEvents([...people.values()], school.care, all, today, days).filter(kept);
   const travelCtx: TravelCtx = { saved: loadTravel(), calendars: new Map([...cfg.calendars.map((c) => [c.id, c] as const), ...careCalendars([...people.values()])]) };
   // A sick child's förskola, lessons and training are struck that day (one "Sjuk" marker instead).
   const sick = loadSick();
   const withCare = applySick([...all, ...careEvents], sick);
-  return { people, children, all: applySick(all, sick).kept, withCare: withCare.kept, hiddenSick: withCare.hidden, travelCtx, schoolFood: school.food, schoolNews: school.news };
+  // Lov: school and pick-up/drop-off go on those days, the training stays.
+  const leave = loadLeave();
+  return { people, children, all: applyLeave(applySick(all, sick).kept, leave), withCare: applyLeave(withCare.kept, leave), hiddenSick: withCare.hidden, travelCtx, calendarDinners, schoolFood: school.food, schoolNews: school.news };
 }
 
-/** `allReminders`: the morning notification wants every reminder, the board shows the first five. */
-export async function buildDashboard(now = new Date(), opts: { allReminders?: boolean } = {}): Promise<Dashboard> {
-  const cfg = loadConfig();
-  const errors: SourceError[] = [];
-  const today = startOfDay(now);
-
-  const conn = haConnection();
-  const [family, waste, weather, prices, states, shopping] = await Promise.all([
-    gatherFamily(cfg, now, errors),
-    collectWaste(cfg, errors),
-    cfg.household.lat != null && cfg.household.lon != null
-      ? cached(`weather`, 30 * MIN, () => forecast(cfg.household.lat!, cfg.household.lon!)).catch((e) => {
-          errors.push({ source: "Väder", message: (e as Error).message });
-          return null;
-        })
-      : Promise.resolve(null),
-    collectPrices(cfg, now, errors),
-    haSocket()?.connected
-      ? Promise.resolve([...haSocket()!.states.values()])
-      : conn
-      ? cached("ha:states", 20_000, () => ha.states(conn)).catch((e) => {
-          errors.push({ source: "Home Assistant", message: (e as Error).message });
-          return [] as HaState[];
-        })
-      : Promise.resolve([] as HaState[]),
-    loadShopping(cfg, errors),
-  ]);
-  const stateMap = new Map(states.map((s) => [s.entity_id, s]));
-  const { people, children, all, withCare, travelCtx } = family;
-  const energySeries = conn ? await todaySeries(conn, cfg.entities.energy ?? {}, now).catch(() => ({})) : {};
-  const plan = buildPlan(withCare, people, travelCtx, now, (e) => toDash(e, people, travelCtx));
-  const dinners = loadDinners();
-  const meals = buildMeals(family.schoolFood, dinners, now);
-  const schoolNews = buildSchoolNews(family.schoolNews, people);
-
-  // ---- Days ----
+/**
+ * The days `offset` … `offset + count − 1` from today, as the week shows them (events, who comes and goes, dinner, waste).
+ * The board asks for the first seven; the calendar page for the weeks after (see buildCalendar).
+ */
+export function buildDays(
+  family: Pick<Family, "people" | "children" | "all" | "travelCtx">,
+  waste: { date: Date; type: string }[],
+  dinners: Record<string, string>,
+  today: Date,
+  offset: number,
+  count: number,
+  /** One child's own view: their events show on every day, also the days they are at the other home. */
+  opts: { allFor?: string } = {},
+): DashDay[] {
+  const { people, children, all, travelCtx } = family;
   const days: DashDay[] = [];
-  for (let i = 0; i < 7; i++) {
+  for (let n = 0; n < count; n++) {
+    const i = offset + n;
     const day = addDays(today, i);
     const prev = addDays(day, -1);
     const evs = eventsOnDay(all, day)
-      .filter((e) => visibleOn(e, people, day))
-      // School lessons are noise on a family board – keep gym (packing matters), all-day items and the
-      // school's own posts (a swim test, a dress-up day).
+      .filter((e) => visibleOn(e, people, day) || (opts.allFor !== undefined && (e.personId === opts.allFor || e.personIds?.includes(opts.allFor))))
+      // School lessons are noise on a family board – keep only gym (packing matters) and all-day items.
       .filter((e) => !e.sourceId.startsWith("school:") || e.gym || e.allDay || e.post)
       .sort((a, b) => Number(b.allDay) - Number(a.allDay) || a.start.getTime() - b.start.getTime())
       .map((e) => toDash(e, people, travelCtx));
@@ -315,8 +327,70 @@ export async function buildDashboard(now = new Date(), opts: { allReminders?: bo
       isToday: i === 0,
       childrenHome: children.filter((c) => isHome(c.custody, day)).map((c) => c.name),
       events: [...extra, ...evs],
+      schoolEnds: schoolEndsOn(all, people, day, (p, d) => isHome(p.custody, d)),
     });
   }
+  return days;
+}
+
+/** The calendar page: `count` days from `offset` days ahead (whole weeks further on than the board's seven). */
+export async function buildCalendar(offset: number, count: number, now = new Date()): Promise<{ days: DashDay[]; errors: SourceError[] }> {
+  const cfg = loadConfig();
+  const errors: SourceError[] = [];
+  const today = startOfDay(now);
+  const [family, waste] = await Promise.all([gatherFamily(cfg, now, errors, offset + count), collectWaste(cfg, errors)]);
+  const dinners = { ...family.calendarDinners, ...loadDinners() };
+  return { days: buildDays(family, waste, dinners, today, offset, count), errors };
+}
+
+/** One child's own week (page 0 = the coming seven days, 1 … 8 the weeks after): everything of theirs, every day. */
+export async function buildPersonDays(personId: string, page: number, now = new Date()): Promise<{ days: DashDay[]; errors: SourceError[] }> {
+  const cfg = loadConfig();
+  const errors: SourceError[] = [];
+  const today = startOfDay(now);
+  const [family, waste] = await Promise.all([gatherFamily(cfg, now, errors, page * 7 + 7), collectWaste(cfg, errors)]);
+  const dinners = { ...family.calendarDinners, ...loadDinners() };
+  return { days: buildDays(family, waste, dinners, today, page * 7, 7, { allFor: personId }), errors };
+}
+
+/** `allReminders`: the morning notification wants every reminder, the board shows the first five. */
+export async function buildDashboard(now = new Date(), opts: { allReminders?: boolean } = {}): Promise<Dashboard> {
+  const cfg = loadConfig();
+  const errors: SourceError[] = [];
+  const today = startOfDay(now);
+
+  const conn = haConnection();
+  const [family, waste, weather, prices, states, shopping, todo] = await Promise.all([
+    gatherFamily(cfg, now, errors),
+    collectWaste(cfg, errors),
+    cfg.household.lat != null && cfg.household.lon != null
+      ? cached(`weather`, 30 * MIN, () => forecast(cfg.household.lat!, cfg.household.lon!)).catch((e) => {
+          errors.push({ source: "Väder", message: (e as Error).message });
+          return null;
+        })
+      : Promise.resolve(null),
+    collectPrices(cfg, now, errors),
+    haSocket()?.connected
+      ? Promise.resolve([...haSocket()!.states.values()])
+      : conn
+      ? cached("ha:states", 20_000, () => ha.states(conn)).catch((e) => {
+          errors.push({ source: "Home Assistant", message: (e as Error).message });
+          return [] as HaState[];
+        })
+      : Promise.resolve([] as HaState[]),
+    loadShopping(cfg, errors),
+    loadTodo(cfg, errors),
+  ]);
+  const stateMap = new Map(states.map((s) => [s.entity_id, s]));
+  const { people, children, all, withCare, travelCtx } = family;
+  const energySeries = conn ? await todaySeries(conn, cfg.entities.energy ?? {}, now).catch(() => ({})) : {};
+  const plan = buildPlan(withCare, people, travelCtx, now, (e) => toDash(e, people, travelCtx));
+  const dinners = { ...family.calendarDinners, ...loadDinners() };
+  const meals = buildMeals(family.schoolFood, dinners, now);
+  const schoolNews = buildSchoolNews(family.schoolNews, people);
+
+  // ---- Days ----
+  const days = buildDays(family, waste, dinners, today, 0, 7);
 
   // ---- Custody card ----
   const custody = buildCustodyCard(children, now);
@@ -335,7 +409,7 @@ export async function buildDashboard(now = new Date(), opts: { allReminders?: bo
       weather: weather ? weatherSummary(weather, now) : undefined,
       sky: weather ? skyNow(weather, now) : undefined,
       tempNow: weather ? tempNow(weather, now) : undefined,
-      sun: weather ? sunToday(weather, now) : undefined,
+      sun: weather && cfg.dashboard.sunArc ? sunToday(weather, now) : undefined,
       phase: phaseOf(now),
     },
     now: buildNow(withCare, people, now, travelCtx),
@@ -361,6 +435,7 @@ export async function buildDashboard(now = new Date(), opts: { allReminders?: bo
     shelf: Object.entries(loadShelf())
       .filter(([id]) => people.get(id)?.care)
       .map(([id, items]) => ({ personId: id, name: people.get(id)!.name, items })),
+    chores: choresForToday(cfg.people, now),
     custody,
     legend: [
       ...cfg.people.map((p) => ({ name: p.name, color: p.color })),
@@ -369,26 +444,41 @@ export async function buildDashboard(now = new Date(), opts: { allReminders?: bo
     ],
     days,
     shopping,
+    ...(todo ? { todo } : {}),
     grocery: (() => {
       const g = groceryIntegration(cfg);
       return g ? { provider: g.provider.meta.id, name: g.provider.meta.name } : undefined;
     })(),
+    groceries: groceryIntegrations(cfg).map((g) => ({ id: g.integ.id, provider: g.provider.meta.id, name: g.provider.meta.name })),
     prices: buildPrices(cfg, prices, now),
     energy: buildEnergy(cfg, stateMap, energySeries, prices),
     schoolFood: todaysFood(family.schoolFood, now),
     schoolDay: buildSchoolDays(all, people, now, (e, day) => visibleOn(e, people, day)),
     school: buildSchoolWeek(all, people, now, (e, day) => visibleOn(e, people, day)),
+    lessonView: cfg.dashboard.lessons ?? "all",
+    hidden: cfg.dashboard.hidden ?? [],
     update: updateAvailable(),
-    cars: cfg.entities.cars.map((c) => ({
-      ...buildCar(c, stateMap, now),
+    version: versionInfo(),
+    cars: cfg.entities.cars.map((c) => {
+      const smart = findSmartCharging(stateMap, c.name, { plan: c.plan, mode: c.mode });
+      const base = buildCar(c, stateMap, now);
+      return {
+      ...base,
+      status: smart?.state ? [base.status, smart.state].filter(Boolean).join(" · ") : base.status,
+      smart,
       climate: c.climate ? { entityId: c.climate, on: isOnState(stateMap.get(c.climate)?.state) } : undefined,
       schedules: (cfg.schedules ?? [])
         .filter((s) => s.entityId === c.climate)
         .map(({ id, name, days, time, enabled }) => ({ id, name, days, time, enabled })),
-    })),
+      };
+    }),
+    smartModes: findAutoModes(stateMap),
     lights: cfg.entities.lights.map((l) => lamp(stateMap, l.entityId, l.name)),
-    music: buildMusic(cfg, stateMap),
+    music: ((m) => (m?.assistant ? { ...m, libraryName: libraryName(haConnection(), (cfg.entities.speakers ?? []).map((s) => s.entityId)) } : m))(buildMusic(cfg, stateMap)),
+    security: buildSecurity(cfg, stateMap),
     vacuums: buildVacuums(cfg, stateMap, (id, prefix) => buildControl(stateMap, id, prefix)),
+    robots: buildRobots(cfg, stateMap),
+    appliances: buildAppliances(cfg, stateMap, now),
     lightGroups: (cfg.entities.lightGroups ?? []).map((g, index) => ({
       index,
       name: g.name,
@@ -396,13 +486,24 @@ export async function buildDashboard(now = new Date(), opts: { allReminders?: bo
       total: g.entities.length,
       offline: g.entities.filter((id) => isOffline(stateMap, id)).map((id) => friendly(stateMap, id)),
       lamps: g.entities.map((id) => lamp(stateMap, id, friendly(stateMap, id), g.name)),
+      ...(g.place && g.place !== "lights" ? { place: g.place } : {}),
     })),
     buttons: cfg.entities.buttons ?? [],
     climates: (cfg.entities.climates ?? []).map((c) => ({
       ...buildClimate(c.entityId, c.name, stateMap),
       controls: (c.controls ?? []).map((id) => buildControl(stateMap, id, c.name)),
     })),
-    temps: cfg.entities.temps.map((t) => ({ name: t.name, value: formatTemp(stateMap, t.entityId) })),
+    temps: cfg.entities.temps.map((t) => {
+      const offline = isOffline(stateMap, t.entityId);
+      const since = stateMap.get(t.entityId)?.last_changed;
+      return {
+        name: t.name,
+        value: formatTemp(stateMap, t.entityId),
+        ...(offline ? { offline: true, days: since ? Math.max(0, Math.floor((now.getTime() - new Date(since).getTime()) / 86_400_000)) : undefined } : {}),
+      };
+    })
+      // Only the temperatures that exist: a sensor that cannot be found or does not answer is not shown as "–" or as a warning.
+      .filter((t) => !t.offline && /\d/.test(t.value)),
     deviceCards: (cfg.entities.deviceCards ?? []).map((c, index) => ({
       index,
       title: c.title,
@@ -413,10 +514,13 @@ export async function buildDashboard(now = new Date(), opts: { allReminders?: bo
     graphs: (cfg.entities.graphs ?? []).map((g, index) => ({ index, title: g.title })),
     accent: cfg.dashboard.accent,
     theme: cfg.dashboard.theme ?? "auto",
+    design: cfg.dashboard.design ?? "glass",
+    waste: nextWaste(waste, now),
     home: cfg.dashboard.home,
     tabs: cfg.dashboard.tabs,
+    jul: christmasView(cfg, now),
     daypart: inTimeWindow(now, "07:00", "19:00") ? "day" : "night",
-    night: inTimeWindow(now, cfg.dashboard.nightFrom, cfg.dashboard.nightTo),
+    night: cfg.dashboard.nightMode !== false && inTimeWindow(now, cfg.dashboard.nightFrom, cfg.dashboard.nightTo),
     errors,
   };
 }
@@ -587,14 +691,47 @@ async function loadShopping(cfg: Config, errors: SourceError[]): Promise<Dashboa
     if (conn) {
       try {
         const items = await cached(`todo:${cfg.shopping.entityId}`, 15_000, () => ha.todoItems(conn, cfg.shopping.entityId!));
-        return { source: "ha", items: items.map((i) => ({ id: i.uid, name: i.summary, done: i.status === "completed" })) };
+        return { source: "ha", items: markSent(items.map((i) => ({ id: i.uid, name: i.summary, done: i.status === "completed" }))) };
       } catch (e) {
         errors.push({ source: "Inköpslista", message: (e as Error).message });
       }
     }
     return { source: "ha", items: [] };
   }
-  return { source: "local", items: loadLocalList() };
+  return { source: "local", items: markSent(loadLocalList()) };
+}
+
+/** "Att göra" (#86): the open items of the chosen todo.* list, those with a date first (soonest), then the rest. */
+export function todoView(items: { uid: string; summary: string; status: string; due?: string }[], title?: string): NonNullable<Dashboard["todo"]> {
+  const open = items.filter((i) => i.status !== "completed" && i.summary?.trim());
+  const dated = open.filter((i) => i.due).sort((a, b) => String(a.due).localeCompare(String(b.due)));
+  const rest = open.filter((i) => !i.due);
+  return {
+    title: title?.trim() || "Att göra",
+    items: [...dated, ...rest].slice(0, 30).map((i) => ({ id: i.uid, name: i.summary.trim(), done: false, ...(i.due ? { due: String(i.due).slice(0, 10) } : {}) })),
+  };
+}
+
+async function loadTodo(cfg: Config, errors: SourceError[]): Promise<Dashboard["todo"]> {
+  const id = cfg.todo?.entityId;
+  const conn = haConnection();
+  if (!id || !conn) return undefined;
+  try {
+    return todoView(await cached(`todo:${id}`, 15_000, () => ha.todoItems(conn, id)), cfg.todo?.title);
+  } catch (e) {
+    errors.push({ source: "Att göra", message: (e as Error).message });
+    return { title: cfg.todo?.title?.trim() || "Att göra", items: [] };
+  }
+}
+
+/** Items that were sent to a shop in the last days get a mark (the shop's name), so the list shows what is already ordered. */
+function markSent<T extends { name: string; done: boolean }>(items: T[]): (T & { sent?: string })[] {
+  const sent = loadLocal().sentToStore ?? {};
+  const limit = Date.now() - 3 * 86_400_000;
+  return items.map((i) => {
+    const s = sent[i.name.trim().toLowerCase()];
+    return s && !i.done && Date.parse(s.at) > limit ? { ...i, sent: s.store } : i;
+  });
 }
 
 const WEEKDAY_NAMES = ["söndag", "måndag", "tisdag", "onsdag", "torsdag", "fredag", "lördag"];
@@ -626,7 +763,11 @@ function kw(states: Map<string, HaState>, id?: string): number | undefined {
 
 function buildEnergy(cfg: Config, states: Map<string, HaState>, series: Record<string, { t: number; v: number }[]>, spot: HourPrice[]): Dashboard["energy"] {
   const e = cfg.entities.energy ?? {};
-  const units = Object.fromEntries([e.solarEnergy, e.importEnergy, e.exportEnergy].filter((x): x is string => Boolean(x)).map((id) => [id, String(states.get(id)?.attributes.unit_of_measurement ?? "kWh")]));
+  const units = Object.fromEntries(
+    [e.solarEnergy, e.importEnergy, e.exportEnergy, e.batteryChargeEnergy, e.batteryDischargeEnergy]
+      .filter((x): x is string => Boolean(x))
+      .map((id) => [id, String(states.get(id)?.attributes.unit_of_measurement ?? "kWh")]),
+  );
   const out = {
     ...energyLive(e, states),
     today: energyToday(e, series, units, spot, (p) => (hasPriceExtras(cfg) ? totalPrice(cfg, p) : p)),
@@ -634,18 +775,61 @@ function buildEnergy(cfg: Config, states: Map<string, HaState>, series: Record<s
   return Object.values(out).some((v) => v !== undefined) ? out : undefined;
 }
 
-function buildPrices(cfg: Config, spot: HourPrice[], now: Date): Dashboard["prices"] {
+/** The next pickup of each kind of waste: "Kärl 1 imorgon", "Kärl 2 ons 18/11". */
+export function nextWaste(waste: { date: Date; type: string }[], now: Date): Dashboard["waste"] {
+  const today = startOfDay(now);
+  const first = new Map<string, Date>();
+  for (const w of waste) {
+    const d = startOfDay(w.date);
+    if (d < today) continue;
+    const prev = first.get(w.type);
+    if (!prev || d < prev) first.set(w.type, d);
+  }
+  const SHORT = ["sön", "mån", "tis", "ons", "tor", "fre", "lör"];
+  return [...first]
+    .sort((a, b) => a[1].getTime() - b[1].getTime() || a[0].localeCompare(b[0], "sv"))
+    .slice(0, 4)
+    .map(([type, d]) => {
+      const diff = daysBetween(today, d);
+      return { type, dayKey: dayKey(d), label: diff === 0 ? "idag" : diff === 1 ? "imorgon" : `${SHORT[d.getDay()]} ${d.getDate()}/${d.getMonth() + 1}` };
+    });
+}
+
+export function buildPrices(cfg: Config, spot: HourPrice[], now: Date): Dashboard["prices"] {
   if (spot.length === 0) return undefined;
   const withExtras = hasPriceExtras(cfg);
-  const prices = withExtras ? spot.map((p) => ({ ...p, price: totalPrice(cfg, p.price) })) : spot;
+  const adj = (x: number) => (withExtras ? totalPrice(cfg, x) : x);
+  const prices = withExtras ? spot.map((p) => ({ ...p, price: totalPrice(cfg, p.price), quarters: p.quarters?.map(adj) })) : spot;
   const currentHour = new Date(now.getFullYear(), now.getMonth(), now.getDate(), now.getHours()).getTime();
   const upcoming = prices.filter((p) => p.start.getTime() >= currentHour).slice(0, 24);
-  const nowPrice = upcoming[0]?.price ?? prices[prices.length - 1].price;
   const block = cheapestBlock(upcoming, Math.max(1, Math.min(8, cfg.electricity.cheapHours)), now);
   const cheapSet = new Set(block?.hours ?? []);
+  const cheapest = block ? { from: hhmm(block.start).slice(0, 2), to: hhmm(block.end).slice(0, 2), avg: block.avg } : undefined;
+  const kind = withExtras ? "total" : "spot";
+  // Per quarter: only when asked for and the source has quarters (the remaining quarters of this hour, then the next 23 hours).
+  if (cfg.electricity.resolution === "quarter" && upcoming.some((p) => p.quarters)) {
+    const nowQ = Math.floor(now.getMinutes() / 15);
+    const bars: PriceBar[] = [];
+    for (const [i, p] of upcoming.entries()) {
+      const qs = p.quarters ?? [p.price];
+      qs.forEach((price, q) => {
+        if (i === 0 && qs.length === 4 && q < nowQ) return;
+        bars.push({
+          hour: String(p.start.getHours()).padStart(2, "0"),
+          minute: String(qs.length === 4 ? q * 15 : 0).padStart(2, "0"),
+          price,
+          cheap: cheapSet.has(p.start.getTime()),
+          current: bars.length === 0,
+        });
+      });
+    }
+    const nowPrice = bars[0]?.price ?? upcoming[0]?.price ?? prices[prices.length - 1].price;
+    return { now: nowPrice, kind, resolution: "quarter", level: priceLevel(nowPrice, bars.map((b) => ({ start: now, price: b.price }))), bars, cheapest };
+  }
+  const nowPrice = upcoming[0]?.price ?? prices[prices.length - 1].price;
   return {
     now: nowPrice,
-    kind: withExtras ? "total" : "spot",
+    kind,
     level: priceLevel(nowPrice, upcoming),
     bars: upcoming.map((p, i) => ({
       hour: String(p.start.getHours()).padStart(2, "0"),
@@ -653,7 +837,7 @@ function buildPrices(cfg: Config, spot: HourPrice[], now: Date): Dashboard["pric
       cheap: cheapSet.has(p.start.getTime()),
       current: i === 0,
     })),
-    cheapest: block ? { from: hhmm(block.start).slice(0, 2), to: hhmm(block.end).slice(0, 2), avg: block.avg } : undefined,
+    cheapest,
   };
 }
 
@@ -901,7 +1085,9 @@ export function buildCareEvents(
     if (!p.care && !live) continue;
     for (let i = 0; i < days; i++) {
       const day = addDays(today, i);
-      const text = i === 0 && live && TIME_RANGE.test(live) ? live : careTimesFor(p.care, day);
+      // Vklass keeps showing its last care time on weekends; it only counts as today's on a weekday.
+      const weekday = day.getDay() !== 0 && day.getDay() !== 6;
+      const text = i === 0 && weekday && live && TIME_RANGE.test(live) ? live : careTimesFor(p.care, day);
       const m = text ? TIME_RANGE.exec(text) : null;
       if (!m || !isHome(p.custody, day) || closed.has(`${p.name}@${dayKey(day)}`)) continue;
       const at = (h: string, min: string) => new Date(day.getFullYear(), day.getMonth(), day.getDate(), Number(h), Number(min));

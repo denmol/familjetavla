@@ -1,0 +1,243 @@
+import { useCallback, useEffect, useState } from "react";
+import type { Dashboard, FoodPart, StoreFood, StoreFoodData } from "../../../server/src/types";
+import { api } from "../api";
+import { Icon } from "../Icon";
+import { Shopping } from "../widgets/shopping";
+import type { Actions } from "./Dashboard";
+import { MealsPage } from "./Detail";
+
+/** Tab Mat: the week's food (school lunch per child and dinners), the shopping list and, per chosen store, its offers, usual items, recipes and own list. */
+export function FoodPage({ data, actions }: { data: Dashboard; actions: Actions }) {
+  return (
+    <div className="stack fd-page">
+      <section className="stack">
+        <h2 className="fd-h">Veckans mat</h2>
+        <MealsPage data={data} actions={actions} />
+      </section>
+      <section className="stack">
+        <h2 className="fd-h">Inköp</h2>
+        <Shopping data={data} actions={actions} />
+      </section>
+      {(data.groceries?.length ?? 0) > 0 && <Stores actions={actions} />}
+    </div>
+  );
+}
+
+const until = (iso?: string) => {
+  if (!iso) return "";
+  const d = new Date(iso);
+  return Number.isNaN(d.getTime()) ? "" : `till ${d.getDate()}/${d.getMonth() + 1}`;
+};
+
+const PICK_KEY = "familjetavla.mat.store";
+
+/** One shop at a time: a row of chips picks it, and only that shop's offers, usual items and so on are shown (and fetched). */
+function Stores({ actions }: { actions: Actions }) {
+  const [stores, setStores] = useState<StoreFood[] | null>(null);
+  const [error, setError] = useState("");
+  const [pick, setPick] = useState(() => {
+    try {
+      return localStorage.getItem(PICK_KEY) ?? "";
+    } catch {
+      return "";
+    }
+  });
+  useEffect(() => {
+    api
+      .foodStores()
+      .then(setStores)
+      .catch((e) => setError((e as Error).message));
+  }, []);
+  if (error) return <p className="faint">Butikerna gick inte att hämta: {error}</p>;
+  if (!stores) return null;
+  const shops = stores.filter((s) => s.parts.length > 0);
+  if (shops.length === 0) return null;
+  const s = shops.find((x) => x.id === pick) ?? shops[0]!;
+  return (
+    <section className="stack">
+      {shops.length > 1 && (
+        <div className="seg fd-shops" role="radiogroup" aria-label="Butik">
+          {shops.map((x) => (
+            <button
+              key={x.id}
+              role="radio"
+              aria-checked={x.id === s.id}
+              className={`seg-btn ${x.id === s.id ? "on" : ""}`}
+              onClick={() => {
+                setPick(x.id);
+                try {
+                  localStorage.setItem(PICK_KEY, x.id);
+                } catch {
+                  /* ignore */
+                }
+              }}
+            >
+              {x.name}
+            </button>
+          ))}
+        </div>
+      )}
+      {shops.length === 1 && <h2 className="fd-h">{s.name}</h2>}
+      {s.parts.map((part) => (
+        <Part key={`${s.id}-${part}`} store={s} part={part} actions={actions} />
+      ))}
+    </section>
+  );
+}
+
+const TITLES: Record<FoodPart, string> = { list: "Listan i appen", cart: "Varukorgen", common: "Mina vanligaste varor", offers: "Erbjudanden", recipes: "Receptförslag" };
+
+/** One dropdown: nothing is fetched until it is opened (the list opens by itself, it is what you shop from). */
+function Part({ store, part, actions }: { store: StoreFood; part: FoodPart; actions: Actions }) {
+  const [open, setOpen] = useState(part === "list");
+  const [data, setData] = useState<StoreFoodData | null>(null);
+  const [busy, setBusy] = useState(false);
+  const load = useCallback(() => {
+    setBusy(true);
+    // One quiet retry: a request that fails to connect is usually the board restarting for an update.
+    const once = () => api.foodPart(store.id, part);
+    once()
+      .catch(() => new Promise<StoreFoodData>((r) => setTimeout(r, 2500)).then(once))
+      .then(setData)
+      .catch((e) => setData({ errors: { [part]: (e as Error).message } }))
+      .finally(() => setBusy(false));
+  }, [store.id, part]);
+  useEffect(() => {
+    if (open && !data && !busy) load();
+  }, [open, data, busy, load]);
+  const err = data?.errors?.[part];
+  const add = (name: string, offerId?: string) => void actions.run("Inköpslistan", () => api.addItem(name, offerId ? { store: store.id, id: offerId } : undefined));
+  const title = `${TITLES[part]}${data?.store && part === "offers" ? ` · ${data.store}` : ""}`;
+  return (
+    <details className="card fd-part" open={open} onToggle={(e) => setOpen((e.currentTarget as HTMLDetailsElement).open)}>
+      <summary>
+        <b>{title}</b>
+        {part === "list" && data?.list && <span className="muted"> · {data.list.rows.filter((r) => !r.done).length} kvar</span>}
+        {part === "cart" && data?.cart && <span className="muted"> · {data.cart.items.length} varor{data.cart.total ? ` · ${data.cart.total}` : ""}</span>}
+      </summary>
+      {part === "offers" && open && <StoreSwitch store={store} onChanged={() => { setData(null); load(); }} />}
+      {busy && !data && <p className="faint" role="status">Hämtar…</p>}
+      {err && <p className="faint">{err}</p>}
+      {data?.list && (
+        <div className="stack" style={{ gap: 2 }}>
+          {data.list.rows.length === 0 && <p className="faint">Listan "{data.list.name}" är tom. Skicka inköpslistan hit med knappen under Inköp.</p>}
+          {data.list.rows.map((r) => (
+            <label key={r.id} className={`shop-item ${r.done ? "done" : ""}`}>
+              <input
+                type="checkbox"
+                checked={r.done}
+                onChange={(e) => {
+                  const done = e.target.checked;
+                  setData({ ...data, list: { ...data.list!, rows: data.list!.rows.map((x) => (x.id === r.id ? { ...x, done } : x)) } });
+                  void actions.run(`${store.name}-listan`, () => api.foodIcaStrike(r.id, r.name, done));
+                }}
+              />
+              <span className="grow">{r.name}</span>
+              {!r.done && data.list?.webSearch && (
+                <a className="sent-chip" href={data.list?.webSearch?.replace("{q}", encodeURIComponent(r.name))} target="_blank" rel="noreferrer" aria-label={`Sök ${r.name} i webbutiken`}>
+                  Sök i butiken ↗
+                </a>
+              )}
+            </label>
+          ))}
+        </div>
+      )}
+      {data?.cart && (
+        <div className="stack" style={{ gap: 2 }}>
+          {data.cart.items.length === 0 && <p className="faint">Varukorgen är tom.</p>}
+          {data.cart.items.map((c, i) => (
+            <div key={`${c.name}-${i}`} className="row gap fd-cart-row">
+              <span className="grow">{c.name}</span>
+              <small className="muted">{c.qty}</small>
+              {c.price && <small className="muted">{c.price}</small>}
+            </div>
+          ))}
+          {data.cart.total && <b className="fd-cart-total">Totalt {data.cart.total}</b>}
+        </div>
+      )}
+      {data?.common && (
+        <div className="row gap wrap">
+          {data.common.length === 0 && <p className="faint">Inget att visa ännu – det fylls på när ni handlat.</p>}
+          {data.common.map((c) => (
+            <button key={c.name} className="btn small" aria-label={`Lägg ${c.name} på inköpslistan`} onClick={() => add(c.name)}>
+              <Icon name="plus" size={14} /> {c.name}
+            </button>
+          ))}
+        </div>
+      )}
+      {data?.offers && (
+        <div className="fd-grid">
+          {data.offers.length === 0 && <p className="faint">Inga erbjudanden hittades.</p>}
+          {data.offers.map((o) => (
+            <div key={o.id} className="card fd-offer">
+              {o.image && <img src={o.image} alt="" loading="lazy" />}
+              <b>{o.name}</b>
+              <small className="muted">{[o.brand, o.size].filter(Boolean).join(" · ")}</small>
+              {o.note && <small className="muted">{o.note}</small>}
+              <div className="row gap fd-offer-foot">
+                <span className="fd-price">{o.price ?? ""}</span>
+                <small className="muted">{until(o.validTo)}</small>
+              </div>
+              <button className="btn small" aria-label={`Lägg ${o.name} på inköpslistan`} onClick={() => add(o.name, store.provider === "ica" ? o.id : undefined)}>
+                <Icon name="plus" size={16} /> På listan
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+      {data?.recipes && (
+        <>
+          <div className="fd-grid">
+            {data.recipes.map((r) => (
+              <a key={r.id} className="card fd-recipe" href={r.url} target="_blank" rel="noreferrer">
+                {r.image && <img src={r.image} alt="" loading="lazy" />}
+                <b>{r.title}</b>
+                <small className="muted">{[r.time, r.ingredients ? `${r.ingredients} ingredienser` : ""].filter(Boolean).join(" · ")}</small>
+              </a>
+            ))}
+          </div>
+          <button className="btn small" style={{ alignSelf: "flex-start" }} onClick={load}>
+            <Icon name="refresh" size={16} /> Fler förslag
+          </button>
+        </>
+      )}
+    </details>
+  );
+}
+
+/** Change which shop the offers are for (saved, so it stays): a list of the shops the provider has. */
+function StoreSwitch({ store, onChanged }: { store: StoreFood; onChanged: () => void }) {
+  const [c, setC] = useState<{ options: { value: string; label: string }[]; value: string } | null>(null);
+  const [error, setError] = useState("");
+  useEffect(() => {
+    api
+      .foodChoices(store.id)
+      .then(setC)
+      .catch(() => setC({ options: [], value: "" }));
+  }, [store.id]);
+  if (!c || c.options.length < 2) return null;
+  return (
+    <label className="field" style={{ marginBottom: 10 }}>
+      <span>Butik</span>
+      <select
+        value={c.value}
+        onChange={(e) => {
+          const value = e.target.value;
+          setC({ ...c, value });
+          api
+            .foodSetStore(store.id, value)
+            .then(onChanged)
+            .catch((er) => setError((er as Error).message));
+        }}
+      >
+        <option value="">Automatiskt – orten där ni bor</option>
+        {c.options.map((o) => (
+          <option key={o.value} value={o.value}>
+            {o.label}
+          </option>
+        ))}
+      </select>
+      {error && <small className="error-text">{error}</small>}
+    </label>
+  );
+}

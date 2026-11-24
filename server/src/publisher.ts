@@ -1,3 +1,4 @@
+import { choresForToday } from "./chores.js";
 import type { FastifyBaseLogger } from "fastify";
 import { fetchWithTimeout } from "./http.js";
 import { haConnection } from "./connectors/ha.js";
@@ -9,6 +10,7 @@ import { daysBetween, dayKey, startOfDay } from "./time.js";
 /**
  * Feed the board's computed knowledge back into Home Assistant, so automations can use it:
  *   sensor.familjetavla_barnvecka_<namn>  hemma | borta  (attr: next_change, days_left)
+ *   sensor.familjetavla_sysslor_<namn>      klart | <n> kvar  (attr: done, total, remaining) – t.ex. för att låsa tv:n tills sysslorna är gjorda
  *   sensor.familjetavla_nasta_sophamtning <datum>        (attr: type, days)
  * States set via POST /api/states vanish on HA restart, so they are re-sent every 10 minutes.
  */
@@ -44,6 +46,16 @@ export async function publishToHa() {
       icon: st.home ? "mdi:home-account" : "mdi:home-export-outline",
       next_change: st.nextChange ? dayKey(st.nextChange) : null,
       days_left: st.daysLeft,
+    });
+  }
+  for (const c of choresForToday(cfg.people, now)) {
+    const left = c.items.filter((i) => !i.done);
+    await setState(`sensor.familjetavla_sysslor_${slug(c.name)}`, left.length ? `${left.length} kvar` : "klart", {
+      friendly_name: `${c.name} sysslor`,
+      icon: left.length ? "mdi:broom" : "mdi:check-circle",
+      done: c.items.length - left.length,
+      total: c.items.length,
+      remaining: left.map((i) => i.title),
     });
   }
   const waste = await collectWaste(cfg, []);

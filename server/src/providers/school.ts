@@ -1,10 +1,12 @@
 import { fetchIcs } from "../connectors/ics.js";
-import { ha, haConnection } from "../connectors/ha.js";
+import { ha, haConnection, type HaState } from "../connectors/ha.js";
 import { getJson } from "../http.js";
 import { schoolsoftCalendar, schoolsoftLogin, schoolsoftLunch } from "../connectors/schoolsoft.js";
-import { isGymLesson, vklassEvents, vklassLogin, vklassWelcome } from "../connectors/vklass.js";
-import { hhmm, shortDate, shortWeekday } from "../time.js";
-import type { HaState } from "../connectors/ha.js";
+import { groupsOfClass, skola24Host, skola24Lessons, skola24Selection, skola24Units } from "../connectors/skola24.js";
+import { tyraCare, tyraEvents, tyraKids, tyraLogin, tyraMe, tyraToEvent } from "../connectors/tyra.js";
+import { isGymLesson, vklassAssignmentInfo, vklassEvents, vklassLogin, vklassWelcome } from "../connectors/vklass.js";
+import { addDays, hhmm, shortDate, shortWeekday } from "../time.js";
+import { menuDishes, splitMenuEvents } from "../mealwords.js";
 import type { ProviderCtx, SchoolEvent, SchoolNewsItem, SchoolProvider } from "./types.js";
 
 const preview = (e: { start: Date; allDay: boolean; title: string }) =>
@@ -55,6 +57,21 @@ export const vklass: SchoolProvider = {
     for (const k of kids) {
       if (!k.id) continue; // preschool child without lessons: menu and care time only
       for (const e of await vklassEvents(s, k.id, from, to)) events.push({ ...e, child: k.name, gym: isGymLesson(e) });
+    }
+    // The homework sheets: the tasks of the next two weeks, a few pages at a time.
+    // From the start of today (an all-day task due today has "ended" by the evening but is still on the board).
+    const today0 = new Date();
+    today0.setHours(0, 0, 0, 0);
+    const soon = Date.now() + 16 * 86_400_000;
+    const tasks = events.filter((e) => e.task && e.url && e.end.getTime() >= today0.getTime() && e.start.getTime() < soon);
+    for (let i = 0; i < tasks.length; i += 4) {
+      await Promise.all(
+        tasks.slice(i, i + 4).map(async (e) => {
+          const info = await vklassAssignmentInfo(s, e.url!);
+          if (info.files.length) e.files = info.files;
+          if (info.kind) e.taskKind = info.kind;
+        }),
+      );
     }
     const food = kids.flatMap((k) => k.food.map((f) => ({ child: k.name, ...f })));
     const care = kids.flatMap((k) => (k.careTime ? [{ child: k.name, text: k.careTime }] : []));
@@ -124,6 +141,80 @@ export const schoolsoft: SchoolProvider = {
   },
 };
 
+/** A Tyra session: the saved one while it works, otherwise a new login (saved for next time). */
+async function tyraSession(ctx: ProviderCtx, fresh = false) {
+  need(ctx, "username", "password");
+  const saved = fresh ? undefined : ctx.secret("session");
+  if (saved) {
+    const userId = await tyraMe(saved);
+    if (userId) return { session: saved, userId };
+  }
+  const session = await tyraLogin(ctx.str("username"), ctx.secret("password")!);
+  const userId = await tyraMe(session);
+  if (!userId) throw new Error("Tyra loggade in men lät inte tavlan läsa kontot.");
+  ctx.remember("session", session);
+  return { session, userId };
+}
+
+async function tyraData(ctx: ProviderCtx, from: Date, to: Date, fresh = false) {
+  const { session, userId } = await tyraSession(ctx, fresh);
+  const kids = await tyraKids(session, userId);
+  if (!kids.length) throw new Error("Inloggad, men kontot har inga barn i Tyra.");
+  const now = new Date();
+  const events: SchoolEvent[] = [];
+  const care: { child: string; text: string }[] = [];
+  for (const k of kids) {
+    for (const raw of await tyraEvents(session, k, from, to)) {
+      const e = tyraToEvent(raw);
+      if (e) events.push({ ...e, child: k.name });
+    }
+    const text = await tyraCare(session, k, now);
+    if (text) care.push({ child: k.name, text });
+  }
+  return { kids, events, care };
+}
+
+export const tyra: SchoolProvider = {
+  meta: {
+    id: "tyra",
+    category: "school",
+    name: "Tyra (förskola)",
+    description: "Förskolans kalender (händelser, stängda dagar) och omsorgstider med mobilnummer och lösenord. Ny – testa gärna och berätta hur det gick.",
+    status: "experimental",
+    discoversChildren: true,
+    fields: [
+      { key: "username", label: "Mobilnummer", type: "text", placeholder: "070-123 45 67" },
+      { key: "password", label: "Lösenord", type: "password", secret: true },
+    ],
+    guide: [
+      "Logga in som vårdnadshavare med mobilnummer och lösenord, som i Tyra-appen.",
+      "Har du bara BankID fungerar det inte – lägg då in stängda dagar själv, eller fråga förskolan om en kalenderlänk.",
+      "Barnen hämtas automatiskt – koppla dem till rätt person nedan.",
+    ],
+  },
+  async test(ctx) {
+    const now = new Date();
+    const d = await tyraData(ctx, now, new Date(now.getTime() + 30 * 86_400_000), true);
+    return {
+      ok: true,
+      message: `Inloggad. Hittade ${d.kids.length} barn och ${d.events.length} händelser kommande månaden.`,
+      discovered: d.kids.map((k) => k.name),
+      preview: [...d.care.map((c) => `${c.child} · omsorg i dag ${c.text}`), ...d.events.slice(0, 4).map(preview)],
+    };
+  },
+  async fetch(ctx, from, to) {
+    try {
+      const d = await tyraData(ctx, from, to);
+      return { events: d.events, care: d.care };
+    } catch (e) {
+      // The saved session can end between the check and the reads: log in again once.
+      if ((e as { status?: number }).status !== 401) throw e;
+      const d = await tyraData(ctx, from, to, true);
+      return { events: d.events, care: d.care };
+    }
+  },
+};
+
 const DAY_NAMES = ["Söndag", "Måndag", "Tisdag", "Onsdag", "Torsdag", "Fredag", "Lördag"];
 const foodDay = (d: Date) => `${DAY_NAMES[d.getDay()]} ${d.getDate()}/${d.getMonth() + 1}`;
 
@@ -158,7 +249,7 @@ export const skolmaten: SchoolProvider = {
     type Day = { date: string; Meals?: { name: string }[] };
     const weeks: Day[] = [];
     for (const offset of [0, 7]) {
-      const d = new Date(from.getTime() + offset * 86_400_000);
+      const d = addDays(from, offset);
       const url = `https://skolmaten.se/api/4/menu/school/${encodeURIComponent(slug)}?year=${isoYear(d)}&week=${isoWeekNo(d)}`;
       const data = await getJson<{ WeekState?: { Days?: Day[] } }>(url, { headers });
       weeks.push(...(data.WeekState?.Days ?? []));
@@ -201,7 +292,7 @@ export const skolmatHa: SchoolProvider = {
     const conn = haConnection();
     if (!conn) throw new Error("Home Assistant är inte anslutet.");
     const evs = await ha.calendarEvents(conn, ctx.str("entityId"), from, to);
-    return { events: [], food: evs.map((e) => ({ child: "", day: foodDay(e.start), dishes: [e.title, ...(e.description ? [e.description] : [])].slice(0, 2) })) };
+    return { events: [], food: evs.map((e) => ({ child: "", day: foodDay(e.start), dishes: menuDishes(e.title, e.description) })) };
   },
 };
 
@@ -220,7 +311,7 @@ export const schoolIcs: SchoolProvider = {
       "Leta efter Prenumerera, Synka kalender eller Exportera schema i skolans app eller webb.",
       "Kopiera länken (börjar ofta med webcal:// eller slutar på .ics) och klistra in här.",
       "Lägg till en länk per barn och välj vilket barn den gäller.",
-      "Matsedeln kommer inte med kalenderlänken. Lägg till Skolmaten.se eller Skolmat från Home Assistant för lunchen.",
+      "Matsedeln kommer med om skolan har den i kalendern (SchoolSoft: slå på Lunch menu när du exporterar). Annars: lägg till Skolmaten.se eller Skolmat från Home Assistant för lunchen.",
     ],
   },
   async test(ctx) {
@@ -228,19 +319,85 @@ export const schoolIcs: SchoolProvider = {
     if (!url) throw new Error("Klistra in kalenderlänken.");
     const now = new Date();
     const evs = await fetchIcs(url, now, new Date(now.getTime() + 21 * 86_400_000));
-    return { ok: true, message: `${evs.length} händelser kommande tre veckor.`, preview: evs.slice(0, 5).map(preview) };
+    const { events, food } = splitMenuEvents(evs, (d) => foodDay(d));
+    return { ok: true, message: `${events.length} händelser kommande tre veckor${food.length ? ` och matsedel för ${food.length} dagar` : ""}.`, preview: [...events.slice(0, 4).map(preview), ...food.slice(0, 2).map((f) => `${f.day}: ${f.dishes.join(" · ")}`)] };
   },
   async fetch(ctx, from, to) {
     const url = ctx.secret("url");
     if (!url) return { events: [] };
     const evs = await fetchIcs(url, from, to);
-    return { events: evs.map((e) => ({ ...e, gym: isGymLesson(e) })) };
+    // "Matsedel" days in the calendar (SchoolSoft with "Lunch menu" on) are lunch, not calendar events.
+    const { events, food } = splitMenuEvents(evs, (d) => foodDay(d));
+    return { events: events.map((e) => ({ ...e, gym: isGymLesson(e) })), food };
   },
 };
 
+export const skola24: SchoolProvider = (() => {
+  async function resolve(ctx: ProviderCtx) {
+    const host = skola24Host(ctx.str("host"));
+    if (!host) throw new Error("Skriv kommunens namn (till exempel Eskilstuna).");
+    const units = await skola24Units(host);
+    if (!units.length) throw new Error(`Hittade inga skolor på ${host} – stämmer kommunens namn? (Skola24-adressen är kommun.skola24.se.)`);
+    return { host, units, unit: units.find((u) => u.unitId === ctx.str("school")) };
+  }
+  return {
+    meta: {
+      id: "skola24",
+      category: "school",
+      name: "Skola24 (schema)",
+      description: "Skolans schema direkt från Skola24, utan inloggning (klassens schema eller barnets eget med personnummer). Alla kommuner har inte öppet schema.",
+      status: "experimental",
+      fields: [
+        { key: "host", label: "Kommun", type: "text", placeholder: "t.ex. Eskilstuna", help: "Skola24-adressen är kommun.skola24.se." },
+        { key: "school", label: "Skola", type: "select" },
+        { key: "class", label: "Klass", type: "select", help: "Välj klassen – eller fyll i barnets personnummer nedan för barnets eget schema." },
+        { key: "group", label: "Grupp (valfritt)", type: "select", optional: true, help: "Har klassen grupper (till exempel 7:1 och 7:2) får du bara gruppens schema. Lämna \"Hela klassen\" för alla i årskursen." },
+        { key: "ssn", label: "Barnets personnummer (valfritt)", type: "password", secret: true, optional: true, help: "Ger barnets eget schema (valfria ämnen, grupper). Skickas bara till Skola24 och sparas krypterat." },
+      ],
+      guide: [
+        "Fyll i kommunens namn och tryck Testa – då hämtas skolorna. Välj skola och tryck Testa igen – då hämtas klasserna. Har klassen grupper (7:1, 7:2 …) får du välja grupp när du testat med klassen.",
+        "Visar Skola24 att schemavisaren är avstängd för kommunen finns schemat i skolans egen app (till exempel Vklass) – använd den kopplingen i stället.",
+        "Lägg till en koppling per barn och välj vilket barn den gäller.",
+      ],
+    },
+    async test(ctx) {
+      const { host, units, unit } = await resolve(ctx);
+      if (!unit) return { ok: true, message: `${units.length} skolor hittades. Välj skola och tryck Testa igen.`, choices: { field: "school", options: units.map((u) => ({ value: u.unitId, label: u.unitId })) } };
+      const ssn = ctx.secret("ssn");
+      const { classes, groups } = await skola24Selection(host, unit.unitGuid);
+      const cls = classes.find((c) => c.groupName === ctx.str("class"));
+      if (!cls && !ssn) {
+        return { ok: true, message: `${classes.length} klasser hittades. Välj klass och tryck Testa igen.`, choices: { field: "class", options: classes.map((c) => ({ value: c.groupName, label: c.groupName })) } };
+      }
+      const mine = cls ? groupsOfClass(cls.groupName, groups, classes.map((c) => c.groupName)) : [];
+      const grp = mine.find((g) => g.groupName === ctx.str("group"));
+      const now = new Date();
+      const evs = await skola24Lessons({ host, unitGuid: unit.unitGuid, classGuid: cls?.groupGuid, groupGuid: grp?.groupGuid, personalNumber: ssn || undefined }, now, new Date(now.getTime() + 21 * 86_400_000));
+      const what = grp ? `gruppen ${grp.groupName}` : "klassen";
+      const result = { ok: true as const, message: `${evs.length} lektioner kommande tre veckor för ${what}.`, preview: evs.slice(0, 5).map(preview) };
+      if (!mine.length) return result;
+      // The group picked now stays first, because the form takes the first option as the choice.
+      const options = [{ value: "", label: "Hela klassen" }, ...mine.map((g) => ({ value: g.groupName, label: g.groupName }))];
+      if (grp) options.unshift(...options.splice(options.findIndex((o) => o.value === grp.groupName), 1));
+      return { ...result, message: `${result.message} Klassen har ${mine.length} grupper – välj grupp och tryck Testa igen om du bara vill ha en.`, choices: { field: "group", options } };
+    },
+    async fetch(ctx, from, to) {
+      const { host, unit } = await resolve(ctx);
+      if (!unit) return { events: [] };
+      const ssn = ctx.secret("ssn");
+      const { classes, groups } = await skola24Selection(host, unit.unitGuid);
+      const cls = classes.find((c) => c.groupName === ctx.str("class"));
+      if (!cls && !ssn) return { events: [] };
+      const grp = cls ? groupsOfClass(cls.groupName, groups, classes.map((c) => c.groupName)).find((g) => g.groupName === ctx.str("group")) : undefined;
+      const evs = await skola24Lessons({ host, unitGuid: unit.unitGuid, classGuid: cls?.groupGuid, groupGuid: grp?.groupGuid, personalNumber: ssn || undefined }, from, to);
+      return { events: evs.map((e) => ({ ...e, gym: isGymLesson(e) })) };
+    },
+  };
+})();
+
 // ---------- InfoMentor via Home Assistant ----------
 
-const SPAN = /(\d{1,2}):(\d{2})\s*[–—-]\s*(\d{1,2}):(\d{2})/;
+const SPAN = /^([01]?\d|2[0-3]):([0-5]\d)\s*[–—-]\s*([01]?\d|2[0-3]):([0-5]\d)$/;
 const pad2 = (n: number | string) => String(n).padStart(2, "0");
 const ymd = (d: Date) => `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
 
@@ -256,16 +413,16 @@ export interface KnownDay {
 }
 
 /**
- * The InfoMentor sensor ("William Skoldag" = "08:30–14:00") holds one school day, the next one, and
+ * The InfoMentor sensor ("Skoldag" = "08:30–14:00") holds one school day, the next one, and
  * moves on at night. So the day is remembered by its date: tomorrow's hours are today's tomorrow.
  * Days more than a week old are dropped.
  */
 export function rememberSchoolDay(known: Record<string, KnownDay>, st: Pick<HaState, "state" | "attributes"> | undefined, today: Date): Record<string, KnownDay> {
   const out = { ...known };
   const a = (st?.attributes ?? {}) as Record<string, unknown>;
-  const m = st ? SPAN.exec(st.state) : null;
+  const m = st ? SPAN.exec(st.state.trim()) : null;
   const date = typeof a.date === "string" && /^\d{4}-\d{2}-\d{2}$/.test(a.date) ? a.date : "";
-  if (m && date) {
+  if (m && date && ymd(new Date(date + "T12:00:00")) === date && Number(m[1]) * 60 + Number(m[2]) < Number(m[3]) * 60 + Number(m[4])) {
     out[date] = {
       s: `${pad2(m[1])}:${m[2]}`,
       e: `${pad2(m[3])}:${m[4]}`,
@@ -333,7 +490,7 @@ export const infomentorHa: SchoolProvider = {
     status: "beta",
     needsHa: true,
     fields: [
-      { key: "schoolDay", label: "Skoldag-sensor (t.ex. William Skoldag)", type: "entity", domains: ["sensor"] },
+      { key: "schoolDay", label: "Skoldag-sensor", type: "entity", domains: ["sensor"] },
       { key: "entityId", label: "Skolkalender (händelser, valfri)", type: "entity", domains: ["calendar"] },
       { key: "news", label: "Skolans nyheter (valfri)", type: "entity", domains: ["sensor"] },
     ],

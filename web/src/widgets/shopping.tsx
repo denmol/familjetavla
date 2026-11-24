@@ -26,7 +26,8 @@ export function Shopping({ data, actions, limit }: { data: Dashboard; actions: A
         {items.map((i) => (
           <label key={i.id} className={`shop-item ${i.done ? "done" : ""}`}>
             <input type="checkbox" checked={i.done} onChange={(e) => actions.run("Inköpslistan", () => api.toggleItem(i.id, e.target.checked))} />
-            <span>{i.name}</span>
+            <span className="grow">{i.name}</span>
+            {i.sent && <small className="sent-chip" title={`Skickad till ${i.sent}`}>✓ {i.sent}</small>}
           </label>
         ))}
         {hidden > 0 && <div className="more-hint">+{hidden} till – tryck för hela listan</div>}
@@ -55,12 +56,14 @@ export function Shopping({ data, actions, limit }: { data: Dashboard; actions: A
             Rensa avbockade
           </button>
         )}
-        {data.grocery && open > 0 && (
-          <button className="btn primary grow" onClick={actions.openGrocery}>
-            <Icon name="cart" size={20} />
-            Skicka till {data.grocery.name}
-          </button>
-        )}
+        {open > 0 &&
+          // One button per chosen store, so the list goes to the one you press.
+          (data.groceries && data.groceries.length > 1 ? data.groceries : data.grocery ? [{ id: undefined, provider: data.grocery.provider, name: data.grocery.name }] : []).map((g, i) => (
+            <button key={g.id ?? g.provider} className={`btn grow ${i === 0 ? "primary" : ""}`} onClick={() => actions.openGrocery(g.id)}>
+              <Icon name="cart" size={20} />
+              Skicka till {g.name}
+            </button>
+          ))}
       </div>
     </section>
   );

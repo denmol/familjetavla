@@ -1,3 +1,4 @@
+import { useEffect, useState } from "react";
 // "Lägg på hemskärmen": Chrome/Edge/Samsung Internet offer a real install prompt (only over https),
 // Safari on iPad/iPhone needs the Share menu. We catch the prompt early, before React starts.
 type InstallPrompt = Event & { prompt: () => Promise<void>; userChoice: Promise<{ outcome: "accepted" | "dismissed" }> };
@@ -51,4 +52,24 @@ export function platform(): Platform {
 /** Inside Home Assistant's ingress frame an install would install Home Assistant, not the board. */
 export function inIngress(): boolean {
   return location.pathname.includes("/hassio_ingress/") || window.self !== window.top;
+}
+
+/**
+ * The board's https address (same certificate as Home Assistant), when the server has one and this
+ * page is plain http: there Chrome can install it as a real app. null otherwise.
+ */
+export function useSecureUrl(api: { secureUrl?: () => Promise<{ url: string | null }> }): string | null {
+  const [url, setUrl] = useState<string | null>(null);
+  useEffect(() => {
+    if (window.isSecureContext && location.protocol === "https:") return;
+    let live = true;
+    api
+      .secureUrl?.()
+      .then((r) => live && setUrl(r.url ? `${r.url}${location.hash}` : null))
+      .catch(() => undefined);
+    return () => {
+      live = false;
+    };
+  }, [api]);
+  return url;
 }

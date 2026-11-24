@@ -37,5 +37,5 @@ COPY --from=build /app/web/dist web/dist
 COPY package.json ./
 
 VOLUME /data
-EXPOSE 8099
+EXPOSE 8099 8443
 CMD ["node", "server/dist/index.js"]

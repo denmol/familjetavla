@@ -74,3 +74,27 @@ describe("Vklass ServerHtml model", () => {
     expect(n[0].tags).toEqual(["Skolan 1-6", "Annan skola"]);
   });
 });
+
+describe("links written in a Vklass news text", () => {
+  it("become files to open, without duplicates", async () => {
+    const { parseVklassNewsData } = await import("./connectors/vklass.js");
+    const json = JSON.stringify({
+      newsArticles: [
+        {
+          id: 1,
+          title: "Veckobrev",
+          publishDate: "2026-10-23",
+          text: '<p>Här är veckobrevet: <a href="/File/Download/9?t=a">Ladda ner veckobrevet</a> och <a href="https://forms.example.se/anmalan">anmälan</a>.</p><p><a href="/File/Download/9?t=a">igen</a> <a href="mailto:x@y.se">mejl</a></p>',
+          files: [],
+        },
+      ],
+    });
+    const js = json.replace(/\\/g, "\\\\").replace(/'/g, "\\'");
+    const n = parseVklassNewsData(`<script>ServerHtml('A', 'x/news-feed-model', '${js}');</script>`);
+    expect(n[0].files).toEqual([
+      { name: "Ladda ner veckobrevet", url: "https://custodian.vklass.se/File/Download/9?t=a" },
+      { name: "anmälan", url: "https://forms.example.se/anmalan" },
+    ]);
+    expect(n[0].text).toContain("Här är veckobrevet");
+  });
+});

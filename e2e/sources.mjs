@@ -7,12 +7,13 @@
 // Writes a Markdown report to $REPORT (default sources-report.md); exit 1 if anything fails.
 import { createHash } from "node:crypto";
 import { readFileSync, writeFileSync } from "node:fs";
-import { EDP_PARKED, EDP_PROVIDERS, edpSchedule, edpSearch, srvSchedule, srvSuggest } from "../server/dist/connectors/waste.js";
+import { EDP_PARKED, EDP_PROVIDERS, edpSchedule, edpSearch, srvSchedule, srvSuggest, sthlmSchedule } from "../server/dist/connectors/waste.js";
 import { fetchPrices } from "../server/dist/connectors/elpris.js";
 import { forecast } from "../server/dist/connectors/weather.js";
 import { lookupPostcode } from "../server/dist/connectors/geo.js";
 import { detectGroups, fetchIcs } from "../server/dist/connectors/ics.js";
-import { AXFOOD_SITES, axfoodSearch } from "../server/dist/connectors/axfood.js";
+import { AXFOOD_SITES, axfoodLoginHttp, axfoodOffers, axfoodSearch } from "../server/dist/connectors/axfood.js";
+import { cityGrossSearch, cityGrossStore } from "../server/dist/connectors/citygross.js";
 import { vklassLogin, vklassWelcome } from "../server/dist/connectors/vklass.js";
 import { skolmaten, vklass } from "../server/dist/providers/school.js";
 import { findStations, swedishStations } from "../server/dist/music.js";
@@ -57,7 +58,8 @@ const spUrl = Object.fromEntries([...edpEvent.matchAll(/"([\w-]+)":\s*\{[^{}]*?"
 
 function addressesFor(key, apiUrl) {
   const own = cfg.edp?.[key];
-  if (own) {
+  // Bara en post med egen källfil (file) hämtar adresserna därifrån; en post med enbart swedenOnly använder edpevent.
+  if (own?.file) {
     const filter = own.filter ? new RegExp(own.filter, "i") : null;
     return testCases(upstream[own.file]).map((t) => t.address).filter((a) => a && (!filter || filter.test(a)));
   }
@@ -113,6 +115,15 @@ for (const [key, p] of [...Object.entries(EDP_PROVIDERS), ...Object.entries(EDP_
       parkedNotes.push(`${p.title}: fortfarande ur funktion – ${tried[tried.length - 1]}`);
       continue;
     }
+    // Some municipalities only answer Swedish addresses: from GitHub's servers they time out though they work for
+    // families in Sweden. Not reaching them from here is no fault; an answer that is wrong still is.
+    // Nacka (2026-11-15) svarar i stället med brandväggens sida "Request Rejected" (HTML i stället för JSON) – samma sak.
+    const unreachable = tried.every((t) => /Kunde inte nå|fetch failed|nås inte|TIMEOUT|aborted|Request Rejected|svarade 40[13]|startsidan svarar 40[13]|Unexpected token '<'|not valid JSON|startsidan svarar 200/i.test(t));
+    if (cfg.edp?.[key]?.swedenOnly && unreachable) {
+      parkedNotes.push(`${p.title}: provas inte härifrån (svarar bara svenska adresser)`);
+      edpRows.push(`| ${p.title} | ${addresses[0]} | ⚪ provas inte härifrån (bara svenska adresser) |`);
+      continue;
+    }
     problems.push(`**${p.title} fungerar inte:** ${tried.join("; ")}`);
     edpRows.push(`| ${p.title} | ${addresses[0]} | ❌ ${tried[tried.length - 1]} |`);
   }
@@ -138,6 +149,17 @@ async function check(name, fn) {
     problems.push(`**${name} fungerar inte:** ${e.message}`);
   }
 }
+// Stockholm Vatten och Avfall (experimental): the address format is checked – a wrong one answers
+// "Invalid address format". Real villa addresses answer an empty list from GitHub's machines in the
+// US (likely only answered from Sweden, like RIX FM), so an empty list is noted, not failed.
+await check("Stockholm Vatten och Avfall", async () => {
+  const p = await sthlmSchedule("Daltorpsvägen 28, Vällingby, 16244").catch((e) => {
+    if (/Hittade ingen hämtning/.test(e.message)) return null;
+    throw e;
+  });
+  if (!p) return "adressformatet godkänns; tom lista från GitHubs maskiner (experimentell, provas av användare i Stockholm)";
+  return `Daltorpsvägen 28, Vällingby → ${[...new Set(p.map((x) => x.type))].join(", ")}, nästa ${day(p[0].date)} ${p[0].type}`;
+});
 await check("Elpris (elprisetjustnu.se)", async () => {
   const p = await fetchPrices("SE3");
   if (!p.length) throw new Error("inga priser");
@@ -175,7 +197,8 @@ for (const [q, mustPlay] of [["P4 Jönköping", true], ["P4 Östergötland", tru
       if (a.audio) return `${hit.name} · ${hit.quality ?? ""} · ${a.type} · ${hit.url.startsWith("https://") ? "https" : "http"}`;
       tried.push(`${new URL(hit.url).host} ${a.status || a.type}`);
     }
-    if (!mustPlay && tried.every((t) => / 40[13]$/.test(t))) return `${hits.length} träffar, strömmarna svarar bara i Sverige (${tried.join(", ")})`;
+    // Svarar bara i Sverige: alla strömmar nekar (401/403) eller har fel hos sig (5xx), och minst en nekar (RIX FM 2026-11-15: 500, 401, 401).
+    if (!mustPlay && tried.every((t) => / (40[13]|5\d\d)$/.test(t)) && tried.some((t) => / 40[13]$/.test(t))) return `${hits.length} träffar, strömmarna svarar bara i Sverige (${tried.join(", ")})`;
     throw new Error(`ingen ström spelade: ${tried.join(", ")}`);
   });
 }
@@ -205,6 +228,32 @@ for (const site of Object.values(AXFOOD_SITES)) {
     return `"mjölk" → ${hits.length} varor, t.ex. ${hits[0].name}`;
   });
 }
+
+// ---- Store offers, the store lists and the login call (all open: they need no account) ----
+for (const site of Object.values(AXFOOD_SITES)) {
+  await check(`${site.label} veckans erbjudanden (butik på orten)`, async () => {
+    const r = await axfoodOffers(site, "Jönköping", 6);
+    if (!r.offers.length) throw new Error(`inga erbjudanden för någon butik i Jönköping (${r.store})`);
+    if (!r.offers.every((o) => o.id && o.name)) throw new Error("erbjudandena saknar kod eller namn – svaret har ändrat format");
+    return `${r.store}: ${r.offers.length} erbjudanden, t.ex. ${r.offers[0].name} ${r.offers[0].price ?? ""}`;
+  });
+  await check(`${site.label} inloggningsanropet (fel lösenord ska avvisas)`, async () => {
+    try {
+      await axfoodLoginHttp(site, "199001011234", "fel-losenord-kontroll");
+    } catch (e) {
+      if (/avvisade inloggningen/.test(e.message)) return "avvisar fel lösenord som väntat";
+      throw e;
+    }
+    throw new Error("loggade in med ett påhittat lösenord?!");
+  });
+}
+await check("City Gross sökning och butiksuppslag", async () => {
+  const hits = await cityGrossSearch("mjölk", "");
+  if (!hits.length || !hits.every((h) => h.code && h.name)) throw new Error("sökningen gav inga varor, eller varorna saknar kod/namn");
+  const st = await cityGrossStore("Jönköping");
+  if (!st?.no) throw new Error("hittade ingen butik för Jönköping (butiksnumret kommer från webbplatsens GraphQL)");
+  return `${hits.length} varor, butik ${st.name} (nr ${st.no})`;
+});
 
 // ---- Real sport calendars (secrets SPORTADMIN_ICS / LAGET_ICS); counts only ----
 for (const [name, key] of [["SportAdmin", "SPORTADMIN_ICS"], ["laget.se", "LAGET_ICS"]]) {

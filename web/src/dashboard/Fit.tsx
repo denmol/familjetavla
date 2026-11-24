@@ -3,7 +3,11 @@ import { useLayoutEffect, useRef, useState } from "react";
 /** Smallest scale we accept – below this text gets too small to read across the room. */
 const MIN = 0.7;
 /** Room kept free at the bottom for the "+N till" button when items are hidden. */
-const HINT = 40;
+const HINT = 52;
+/** Last resort when a single remaining card still collides with the "+N" button. */
+const FLOOR = 0.55;
+/** The new design never hides or scrolls: an area shrinks as far as it takes (whatever the page zoom). */
+const FLAT_MIN = 0.2;
 
 /**
  * An area that fits its content on a tablet. When CSS puts it in fit mode (fixed height, see `.fit`
@@ -19,6 +23,9 @@ export function Fit({
   deps = [],
   more,
   min = MIN,
+  base = 1,
+  noShrink = false,
+  floor,
 }: {
   className?: string;
   children: React.ReactNode;
@@ -26,6 +33,12 @@ export function Fit({
   more?: (hidden: number) => React.ReactNode;
   /** Smallest scale for this area; where items can be hidden behind "+N", keep text bigger. */
   min?: number;
+  /** Wanted text size (0.7–1.6): starts here and shrinks only if the box is too small, so it never overflows. */
+  base?: number;
+  /** Never below `base`: the area scrolls instead (the schedules, where readable text matters more than seeing every day at once). */
+  noShrink?: boolean;
+  /** Never below this share of `base` (0.85 = 85 %): text stays readable, the area scrolls the rest. */
+  floor?: number;
 }) {
   const outer = useRef<HTMLDivElement>(null);
   const inner = useRef<HTMLDivElement>(null);
@@ -35,28 +48,67 @@ export function Fit({
     const i = inner.current;
     if (!o || !i) return;
     const fit = () => {
+      const lo = noShrink ? base : floor !== undefined ? floor * base : document.documentElement.dataset.design === "flat" ? FLAT_MIN : min;
       const kids = [...i.children] as HTMLElement[];
       kids.forEach((k) => (k.style.display = ""));
-      i.style.zoom = "1";
-      o.classList.remove("fit-overflow");
+      i.style.transform = "";
+      i.style.width = "";
+      o.classList.remove("fit-overflow", "fit-tight");
       let cut = 0;
       if (getComputedStyle(o).overflowY === "auto") {
         const avail = o.clientHeight;
-        const height = () => i.getBoundingClientRect().height;
+        // Shrinking is done with transform + a wider box (not CSS zoom): Safari and Chrome measure a zoomed box differently,
+        // while offsetHeight (the layout height, in the page's own pixels) is the same everywhere. The visible height is that times the scale.
+        let scale = 1;
+        const apply = (s: number) => {
+          scale = s;
+          i.style.transform = s === 1 ? "" : `scale(${s})`;
+          i.style.transformOrigin = "0 0";
+          i.style.width = s === 1 ? "" : `${100 / s}%`;
+        };
+        const height = () => i.offsetHeight * scale;
         if (avail) {
+          if (base !== 1) apply(base);
           let h = height();
-          let scale = 1;
           // Scaling changes line breaks, so measure again and adjust once more.
-          for (let pass = 0; pass < 3 && h > avail + 1 && scale > min; pass++) {
-            scale = Math.max(min, scale * (avail / h));
-            i.style.zoom = String(scale);
+          // (A few more passes and a hair of margin: text re-wraps as it shrinks, so one step rarely lands exactly.)
+          for (let pass = 0; pass < 6 && h > avail + 1 && scale > lo; pass++) {
+            apply(Math.max(lo, scale * (avail / h) * 0.99));
+            h = height();
+          }
+          // Text re-wraps as it shrinks, so the first fit is often smaller than needed: find the largest scale that still fits.
+          if (h <= avail + 1 && scale < base) {
+            let good = scale;
+            let bad = base;
+            for (let k = 0; k < 6; k++) {
+              const mid = (good + bad) / 2;
+              apply(mid);
+              if (height() <= avail + 1) good = mid;
+              else bad = mid;
+            }
+            apply(good);
             h = height();
           }
           if (h > avail + 1 && more) {
-            // Still too tall: hide whole items from the end – never half an item – and offer the rest behind a button.
-            while (cut < kids.length - 1 && height() > avail - HINT) {
-              kids[kids.length - 1 - cut].style.display = "none";
-              cut++;
+            // Still too tall: hide whole items that don't fit – never half an item – and offer the rest behind a button.
+            // First fit: keep the order, but a card that doesn't fit is skipped so a smaller one after it can use the room.
+            kids.forEach((k) => (k.style.display = "none"));
+            let shown = 0;
+            for (const k of kids) {
+              k.style.display = "";
+              if (shown > 0 && height() > avail - HINT) k.style.display = "none";
+              else shown++;
+            }
+            cut = kids.length - shown;
+            // The last card is still too tall to leave room for the button: let it drop its extras (".fit-tight").
+            if (height() > avail - HINT) {
+              o.classList.add("fit-tight");
+              h = height();
+              // Still in the way of the button (one big card): shrink it a little more rather than let the button cover it.
+              for (let pass = 0; pass < 4 && h > avail - HINT && scale > FLOOR; pass++) {
+                apply(Math.max(FLOOR, scale * ((avail - HINT) / h) * 0.99));
+                h = height();
+              }
             }
           } else if (h > avail + 1) o.classList.add("fit-overflow");
         }
@@ -76,7 +128,7 @@ export function Fit({
       window.removeEventListener("resize", fit);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, deps);
+  }, [...deps, base, noShrink, floor]);
   return (
     <div ref={outer} className={`fit ${className}`}>
       <div ref={inner} className="fit-inner">

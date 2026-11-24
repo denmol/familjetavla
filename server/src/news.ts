@@ -1,5 +1,7 @@
 import type { SchoolData, SourcedEvent } from "./sources.js";
 import { loadLocal, saveLocal, type OwnEvent } from "./store.js";
+import { addDays } from "./time.js";
+import { schoolFileUrl } from "./files.js";
 import type { Person, Reminder, SchoolNews } from "./types.js";
 
 const SHORT_MONTHS = ["jan", "feb", "mars", "apr", "maj", "juni", "juli", "aug", "sep", "okt", "nov", "dec"];
@@ -24,7 +26,8 @@ export function buildSchoolNews(news: SchoolData["news"], people: Map<string, Pe
         text: n.text,
         published: n.published,
         date: d ? `${d.getDate()} ${SHORT_MONTHS[d.getMonth()]}` : undefined,
-        files: n.files.map((f) => ({ name: f.name, url: `api/school/file?u=${encodeURIComponent(f.url)}` })),
+        // Vklass's own files need the family's login, so the board fetches them; other links open as they are.
+        files: n.files.map((f) => ({ name: f.name, url: schoolFileUrl(f.url) })),
         seen: seen.has(n.id),
       };
     });
@@ -36,7 +39,7 @@ export function newsReminders(news: SchoolNews[], now: Date): Reminder[] {
   return news
     .filter((n) => !n.seen && (!n.published || Date.parse(n.published) >= week))
     .slice(0, 2)
-    .map((n) => ({ icon: "school" as const, title: `Från skolan: ${n.title}`, sub: `${n.who ? `${n.who} · ` : ""}läs på Skolan`, tone: "blue" as const, personId: n.personId }));
+    .map((n) => ({ icon: "school" as const, title: `Från skolan: ${n.title}`, sub: `${n.who ? `${n.who} · ` : ""}tryck för att läsa`, tone: "blue" as const, personId: n.personId, newsId: n.id }));
 }
 
 // ---------- Utflykt, matsäck … from school news ----------
@@ -89,7 +92,7 @@ export function datesIn(text: string, from: Date): Date[] {
  */
 export function newsTripReminders(news: SchoolNews[], now: Date): Reminder[] {
   const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-  const tomorrow = new Date(today.getTime() + 86_400_000);
+  const tomorrow = addDays(today, 1); // not +24 h: the day the clock goes back is 25 hours long
   const out: Reminder[] = [];
   const recent = now.getTime() - 21 * 86_400_000;
   for (const n of news) {
@@ -144,6 +147,6 @@ export function ownCalendarEvents(): SourcedEvent[] {
     const at = (t?: string) => (t ? new Date(y, m - 1, d, Number(t.slice(0, 2)), Number(t.slice(3, 5))) : new Date(y, m - 1, d));
     const start = at(e.time);
     const end = e.time ? (e.end ? at(e.end) : new Date(start.getTime() + 60 * 60_000)) : new Date(y, m - 1, d + 1);
-    return { sourceId: "own", uid: e.id, title: e.title, description: e.note, start, end, allDay: !e.time, personId: e.personId, category: "family" as const };
+    return { sourceId: "own", uid: e.id, title: e.title, description: e.note, start, end, allDay: !e.time, personId: e.personId, personIds: e.personIds, category: "family" as const };
   });
 }

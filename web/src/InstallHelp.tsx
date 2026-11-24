@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { Icon } from "./Icon";
-import { canPrompt, inIngress, isInstalled, onInstallChange, platform, promptInstall } from "./install";
+import { api } from "./api";
+import { canPrompt, inIngress, isInstalled, onInstallChange, platform, promptInstall, useSecureUrl } from "./install";
 
 /** Where the phone opens "Lägg till från mobilen": the direct port when we are inside HA. */
 export function quickAddUrl() {
@@ -11,6 +12,7 @@ export function quickAddUrl() {
 /** "Lägg tavlan på hemskärmen" – a real install button where the browser allows it, otherwise the steps for this device. */
 export function InstallHelp() {
   const [, rerender] = useState(0);
+  const secureUrl = useSecureUrl(api);
   useEffect(() => {
     const off = onInstallChange(() => rerender((n) => n + 1));
     return () => {
@@ -33,6 +35,17 @@ export function InstallHelp() {
   const secure = window.isSecureContext;
   return (
     <div className="stack" style={{ gap: 10 }}>
+      {secureUrl && p !== "ios" && !canPrompt() && (
+        <>
+          <a className="btn primary" style={{ alignSelf: "flex-start" }} href={secureUrl}>
+            <Icon name="install" size={20} /> Öppna säker adress och installera
+          </a>
+          <small className="muted">
+            Tavlan körs även med https på <b>{secureUrl.split("#")[0]}</b> (samma certifikat som Home Assistant). Där kan Chrome installera den som
+            en riktig app. Adressen behöver nå tavlan på hemnätet.
+          </small>
+        </>
+      )}
       {canPrompt() && (
         <button className="btn primary" style={{ alignSelf: "flex-start" }} onClick={() => void promptInstall()}>
           <Icon name="install" size={20} /> Installera Familjetavla
@@ -64,10 +77,11 @@ export function InstallHelp() {
           I Chrome eller Edge: klicka på installera-ikonen längst till höger i adressfältet. I Safari på Mac: Arkiv → <b>Lägg till i Dock</b>.
         </p>
       )}
-      {!secure && p !== "ios" && (
+      {!secure && !secureUrl && p !== "ios" && (
         <small className="muted">
           Tavlan körs utan https på hemnätet, så Chrome gör en genväg som öppnas i webbläsaren i stället för en riktig app. För en surfplatta på
-          väggen fungerar en kioskapp som <b>Fully Kiosk Browser</b> bäst: helskärm, skärmen alltid på och start när plattan startar.
+          väggen fungerar en kioskapp som <b>Fully Kiosk Browser</b> bäst: helskärm, skärmen alltid på och start när plattan startar. Har
+          Home Assistant https (Let's Encrypt, DuckDNS …) kan tavlan använda samma certifikat – se "Https" i README.
         </small>
       )}
     </div>

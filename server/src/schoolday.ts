@@ -1,4 +1,5 @@
 import type { SourcedEvent } from "./sources.js";
+import { boardFiles } from "./files.js";
 import type { Dashboard, Person, SchoolChild } from "./types.js";
 
 const DAY = 86_400_000;
@@ -99,11 +100,15 @@ export function buildSchoolWeek(
     for (let i = 0; i < 5; i++) {
       const day = plusDays(monday, i);
       const next = plusDays(day, 1);
-      const lessons = mine
+      const items = mine
         .filter((e) => !e.allDay && !e.task && e.start >= day && e.start < next && !TASK.test(e.title) && isHere(e, day))
-        .sort((a, b) => a.start.getTime() - b.start.getTime())
+        .sort((a, b) => a.start.getTime() - b.start.getTime());
+      const reported = items.find((e) => e.schoolDay);
+      const dayHours = reported && { start: hm(reported.start), end: hm(reported.end), gym: items.some((e) => e.gym) };
+      const actualLessons = items.filter((e) => !e.post && !e.schoolDay);
+      const lessons = (actualLessons.length || !reported ? actualLessons : [reported])
         .map((e) => ({ start: hm(e.start), end: hm(e.end), title: e.title, location: e.location || undefined, gym: Boolean(e.gym) }));
-      days.push({ dayKey: dayKey(day), label: LONG[day.getDay()], today: day.getTime() === today.getTime(), lessons });
+      days.push({ dayKey: dayKey(day), label: LONG[day.getDay()], today: day.getTime() === today.getTime(), hours: dayHours, lessons });
     }
     const until = plusDays(today, 14);
     const CLOSED = /stängt|stängd|lov\b|studiedag|planeringsdag|apt\b/i;
@@ -119,14 +124,48 @@ export function buildSchoolWeek(
           dayKey: dayKey(d),
           label,
           title: e.title,
-          kind: taskKind(e.title),
+          // The platform's own word (Läxa, Prov, Uppgift) wins over a guess from the title.
+          kind: e.taskKind ?? taskKind(e.title),
           time: e.allDay ? undefined : hm(e.start),
           detail: detail && detail !== e.title ? detail.slice(0, 4000) : undefined,
           url: e.url,
+          // Through the board's own file route (it logs in to the school platform for you).
+          ...(boardFiles(e.files) ? { files: boardFiles(e.files) } : {}),
         };
       });
     if (!days.some((d) => d.lessons.length) && !tasks.length) continue;
     out.push({ personId: p.id, name: p.name, color: p.color, days, tasks });
+  }
+  return out;
+}
+
+/** When each child's school day ends on `day` (last lesson), whether there is gym, and whether the child is with us that day. */
+export interface SchoolEnd {
+  name: string;
+  end: string;
+  gym: boolean;
+  /** With this household that day (custody). The end is shown on the other days too, unless the screen says otherwise. */
+  home: boolean;
+}
+
+/**
+ * Every child's school end on one day, from the lessons themselves – not only this Monday–Friday and not only the
+ * days the child is here (the week and the calendar show days further on, and the other home's days too).
+ */
+export function schoolEndsOn(events: SourcedEvent[], people: Map<string, Person>, day: Date, isHome: (p: Person, day: Date) => boolean): SchoolEnd[] {
+  const from = startOfDay(day);
+  const to = plusDays(from, 1);
+  const out: SchoolEnd[] = [];
+  for (const p of people.values()) {
+    if (p.kind !== "child") continue;
+    const lessons = events.filter(
+      (e) => e.personId === p.id && (e.sourceId.startsWith("school:") || e.category === "school") && !e.allDay && !e.task && !TASK.test(e.title) && e.start >= from && e.start < to,
+    );
+    const reported = lessons.filter((e) => e.schoolDay);
+    const basis = reported.length ? reported : lessons.filter((e) => !e.post);
+    if (!basis.length) continue;
+    const last = basis.reduce((a, b) => (b.end > a.end ? b : a));
+    out.push({ name: p.name, end: hm(last.end), gym: lessons.some((l) => l.gym), home: isHome(p, day) });
   }
   return out;
 }

@@ -13,3 +13,11 @@ describe("rolling care schedule", () => {
     expect(careTimesFor({ days: { "3": "08:00-15:00" } }, new Date(2026, 9, 21))).toBe("08:00-15:00");
   });
 });
+
+describe("care: the child goes home alone", () => {
+  it("reads naturally on the board", async () => {
+    const { travelSummary } = await import("./travel.js");
+    expect(travelSummary({ key: "k", kind: "care", fromCalendar: false, to: { mode: "adult:a", label: "Anna" }, home: { mode: "self", label: "Går själv" } })).toBe("Anna lämnar · Går hem själv");
+    expect(travelSummary({ key: "k", kind: "care", fromCalendar: false, home: { mode: "self", label: "Går själv" } })).toBe("Går hem själv");
+  });
+});

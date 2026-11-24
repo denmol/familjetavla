@@ -1,37 +1,105 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { flushSync } from "react-dom";
+import { createPortal, flushSync } from "react-dom";
 import type { DashEvent, Dashboard as Dash, TravelChoice, TravelLeg } from "../../../server/src/types";
 import { sameAsLunch } from "../../../server/src/mealwords";
 import { api, isDemo } from "../api";
 import { Icon, type IconName } from "../Icon";
 import { INNER_NAME } from "../IpadFrame";
 import { Avatar, EventIcon } from "./bits";
+import { PersonPage } from "./Person";
+import { HomeFlat } from "./HomeFlat";
+import { Attachments } from "./Attachments";
+import { RichText } from "./RichText";
+import { ScaleSheet } from "./ScaleSheet";
+import { usePagePrefs } from "../pageprefs";
+import { applyScale, readScale, scaleChosen, screensaverOff, useDesign } from "../uiscale";
 import { GroceryModal } from "./GroceryModal";
-import { Home } from "./Home";
+import { Home, weekColumns } from "./Home";
 import { Fit } from "./Fit";
+import { JulPage } from "../jul/JulPage";
+import { JulChip } from "../jul/JulChip";
 import { DetailPage, PageBar, PAGE_TITLES, type PageId } from "./Detail";
 import { navigate, useHash } from "../route";
 import { InstallHelp, quickAddUrl } from "../InstallHelp";
-import { isInstalled } from "../install";
+import { canPrompt, inIngress, isInstalled, onInstallChange, platform, promptInstall, useSecureUrl } from "../install";
 import { CarsPage, EnergyPage, GraphsPage, HousePage, LightsPage } from "./Pages";
+import { buttonsAt, quickCount } from "./QuickButtons";
+import { FoodPage } from "./Food";
 import { MusicPage } from "../widgets/music";
-import { VacuumPage } from "../widgets/vacuums";
+import { HouseholdPage, SecurityPage } from "../widgets/security";
 
-export type Tab = "home" | "cars" | "lights" | "house" | "energy" | "graphs" | "music" | "vacuums";
-const TAB_IDS: Tab[] = ["home", "cars", "lights", "house", "energy", "graphs", "music", "vacuums"];
+export type Tab = "home" | "food" | "cars" | "lights" | "house" | "energy" | "graphs" | "music" | "security" | "household" | "jul";
+const TAB_IDS: Tab[] = ["home", "food", "cars", "lights", "house", "energy", "graphs", "music", "security", "household", "jul"];
 const PAGE_IDS = Object.keys(PAGE_TITLES) as PageId[];
 
-/** `short` is the label on the tab bar when the full name is too long for seven tabs on a phone. */
-const TABS: { id: Tab; label: string; short?: string; icon: IconName; show: (d: Dash) => boolean }[] = [
+const TABS: { id: Tab; label: string; icon: IconName; show: (d: Dash) => boolean }[] = [
   { id: "home", label: "Hem", icon: "calendar", show: () => true },
+  { id: "food", label: "Mat", icon: "food", show: (d) => d.meals.length > 0 || Boolean(d.grocery) || d.shopping.items.length > 0 },
   { id: "cars", label: "Bil", icon: "car", show: (d) => d.cars.length > 0 },
-  { id: "lights", label: "Ljus", icon: "bulb", show: (d) => d.lightGroups.length + d.buttons.length + d.lights.length > 0 },
-  { id: "house", label: "Hus", icon: "home", show: (d) => d.climates.length + d.temps.length > 0 },
+  { id: "lights", label: "Ljus", icon: "bulb", show: (d) => d.lightGroups.length + buttonsAt(d, "lights").length + d.lights.length > 0 },
+  { id: "house", label: "Hus", icon: "home", show: (d) => d.climates.length + d.temps.length + quickCount(d, "house") > 0 },
   { id: "energy", label: "Energi", icon: "bolt", show: (d) => Boolean(d.energy || d.prices) },
   { id: "graphs", label: "Grafer", icon: "graph", show: (d) => d.graphs.length > 0 || Boolean(d.prices) },
   { id: "music", label: "Musik", icon: "music", show: (d) => Boolean(d.music?.speakers.length) },
-  { id: "vacuums", label: "Dammsugare", short: "Städ", icon: "vacuum", show: (d) => d.vacuums.length > 0 },
+  { id: "security", label: "Säkerhet", icon: "shield", show: (d) => Boolean(d.security) || quickCount(d, "security") > 0 },
+  { id: "household", label: "Hushåll", icon: "robot", show: (d) => Boolean(d.vacuums?.length || d.robots?.length || d.appliances?.length || quickCount(d, "household")) },
+  { id: "jul", label: "Jul", icon: "snow", show: (d) => Boolean(d.jul?.show) },
 ];
+
+/** Phones fit six tabs side by side; the rest sit under "Mer" (tablets show them all). */
+const NARROW = "(max-width: 640px)";
+function TabBar({ tabs, tab, go }: { tabs: typeof TABS; tab: Tab; go: (id: Tab) => void }) {
+  const [narrow, setNarrow] = useState(() => window.matchMedia(NARROW).matches);
+  const [more, setMore] = useState(false);
+  useEffect(() => {
+    const mq = window.matchMedia(NARROW);
+    const on = () => setNarrow(mq.matches);
+    mq.addEventListener("change", on);
+    return () => mq.removeEventListener("change", on);
+  }, []);
+  const split = narrow && tabs.length > 6;
+  const shown = split ? tabs.slice(0, 5) : tabs;
+  const rest = split ? tabs.slice(5) : [];
+  const inRest = rest.some((t) => t.id === tab);
+  return (
+    <>
+      <nav className="tabbar" aria-label="Flikar">
+        {shown.map((t) => (
+          <button key={t.id} aria-current={tab === t.id ? "page" : undefined} onClick={() => go(t.id)}>
+            <Icon name={t.icon} size={24} />
+            {t.label}
+          </button>
+        ))}
+        {split && (
+          <button aria-current={inRest ? "page" : undefined} aria-expanded={more} onClick={() => setMore(true)}>
+            <Icon name="plus" size={24} />
+            {inRest ? rest.find((t) => t.id === tab)!.label : "Mer"}
+          </button>
+        )}
+      </nav>
+      {more &&
+        createPortal(
+          <div className="overlay" onClick={() => setMore(false)}>
+            <div className="sheet more-tabs" role="dialog" aria-modal="true" aria-label="Fler flikar" onClick={(e) => e.stopPropagation()}>
+              {rest.map((t) => (
+                <button
+                  key={t.id}
+                  className={`big-btn ${tab === t.id ? "accent" : ""}`}
+                  onClick={() => {
+                    setMore(false);
+                    go(t.id);
+                  }}
+                >
+                  <Icon name={t.icon} size={24} /> {t.label}
+                </button>
+              ))}
+            </div>
+          </div>,
+          document.body,
+        )}
+    </>
+  );
+}
 
 const THEME_KEY = "familjetavla.theme";
 
@@ -49,7 +117,7 @@ export interface Actions {
   run: (label: string, fn: () => Promise<unknown>, verify?: Verify) => Promise<void>;
   /** Like run, but asks "Är du säker?" first – for heating, locks and similar. */
   confirm: (question: string, label: string, fn: () => Promise<unknown>) => void;
-  openGrocery: () => void;
+  openGrocery: (store?: string) => void;
   /** Tap on an event: show its details in a sheet. */
   openEvent: (e: DashEvent & { dayLabel?: string }) => void;
   /** "Planera veckan": set who drops off / picks up / drives for the whole week (or plan the food). */
@@ -282,7 +350,7 @@ function MiniPick({
               onClick={() => onPick(on ? undefined : { mode: o.mode })}
             >
               {o.mode === "ride" && on && leg?.by ? leg.by : o.label}
-              {b && <span aria-label="upptagen"> ⚠</span>}
+              {b && <span aria-label="upptagen" className="busy-mark"> <Icon name="alert" size={14} /></span>}
             </button>
           );
         })}
@@ -460,7 +528,7 @@ function PlanSheet({ data, onClose, onChanged, toast, startTab = "who" }: { data
             {onlyMissing ? "Visa allt" : "Bara det som saknas"}
           </button>
         </div>
-        {items.length === 0 && <p className="muted">{onlyMissing ? "Klart! Allt den här veckan har någon som lämnar, hämtar eller skjutsar." : "Inga aktiviteter eller förskoledagar de kommande 7 dagarna."}</p>}
+        {items.length === 0 && <p className="muted">{onlyMissing ? "Klart. Allt den här veckan har någon som lämnar, hämtar eller skjutsar." : "Inga aktiviteter eller förskoledagar de kommande 7 dagarna."}</p>}
         <div className="stack plan-list">
           {days.map((dk) => (
             <div key={dk} className="stack" style={{ gap: 8 }}>
@@ -563,7 +631,21 @@ function EventSheet({
               </a>
             </div>
           )}
-          {e.description && <EventText text={e.description} />}
+          {e.description && (/ \| /.test(e.description) ? <RichText className="event-text" text={e.description} /> : <EventText text={e.description} />)}
+          <Attachments files={e.files} />
+          {e.leave && (
+            <button
+              className="btn small ghost"
+              style={{ alignSelf: "flex-start" }}
+              onClick={async () => {
+                await api.setLeave(e.leave!.personId, e.leave!.date, e.leave!.date, false);
+                await onChanged();
+                onClose();
+              }}
+            >
+              <Icon name="x" size={18} /> Ta bort lov den här dagen
+            </button>
+          )}
           {e.sick && (
             <button
               className={`btn small ${e.sick.on ? "" : "ghost"}`}
@@ -590,6 +672,7 @@ function EventSheet({
               <Icon name="trashSmall" size={18} /> Ta bort från veckan
             </button>
           )}
+          {e.cancelKey && <CancelEvent e={e} onDone={async () => (await onChanged(), onClose())} />}
         </div>
         {care && t?.calendarId && <ShelfPicker data={data} personId={t.calendarId.slice(5)} onChanged={onChanged} />}
         {t && (
@@ -614,6 +697,122 @@ function EventSheet({
   );
 }
 
+/** "Utgår": the training is cancelled, the meeting moved – gone from the board, the calendar itself untouched. */
+function CancelEvent({ e, onDone }: { e: DashEvent; onDone: () => Promise<unknown> }) {
+  const [ask, setAsk] = useState(false);
+  const [busy, setBusy] = useState(false);
+  if (!ask)
+    return (
+      <button className="btn small ghost" style={{ alignSelf: "flex-start" }} onClick={() => setAsk(true)}>
+        <Icon name="x" size={18} /> Utgår
+      </button>
+    );
+  return (
+    <div className="cancel-ask">
+      <span>
+        <b>{e.title}</b> tas bort från tavlan och påminnelserna. Kalendern ändras inte.
+      </span>
+      <div className="row gap">
+        <button
+          className="btn small primary"
+          disabled={busy}
+          onClick={async () => {
+            setBusy(true);
+            try {
+              await api.cancelEvent(e.cancelKey!, true);
+              await onDone();
+            } finally {
+              setBusy(false);
+            }
+          }}
+        >
+          Ja, utgår
+        </button>
+        <button className="btn small ghost" onClick={() => setAsk(false)}>
+          Avbryt
+        </button>
+      </div>
+    </div>
+  );
+}
+
+const SHOW_UPDATE = "familjetavla:visa-uppdatering";
+
+const NUDGE_KEY = "familjetavla.installera";
+/**
+ * "Installera appen" when the board is opened in a browser that can install it: Chrome/Edge/Samsung
+ * offer a real install prompt, Safari on iPad/iPhone gets the share-menu steps. "Inte nu" waits 30 days.
+ */
+function InstallNudge({ onHelp }: { onHelp: () => void }) {
+  const [, redraw] = useState(0);
+  useEffect(() => {
+    const off = onInstallChange(() => redraw((n) => n + 1));
+    return () => {
+      off();
+    };
+  }, []);
+  const [hidden, setHidden] = useState(() => {
+    try {
+      return Number(localStorage.getItem(NUDGE_KEY) ?? 0) > Date.now();
+    } catch {
+      return false;
+    }
+  });
+  const secureUrl = useSecureUrl(api);
+  if (hidden || isInstalled() || inIngress() || !(canPrompt() || platform() === "ios" || secureUrl)) return null;
+  const later = () => {
+    setHidden(true);
+    try {
+      localStorage.setItem(NUDGE_KEY, String(Date.now() + 30 * 86_400_000));
+    } catch {
+      /* private mode */
+    }
+  };
+  return (
+    <div className="card update-banner install-nudge" role="status">
+      <div className="row gap wrap" style={{ alignItems: "center" }}>
+        <Icon name="install" size={20} />
+        <b className="grow">Installera Familjetavlan som app – öppnas i helskärm från hemskärmen</b>
+        <button
+          className="btn small primary"
+          onClick={async () => {
+            if (canPrompt()) {
+              if (await promptInstall()) setHidden(true);
+            } else if (secureUrl && platform() !== "ios") location.href = secureUrl;
+            else onHelp();
+          }}
+        >
+          Installera
+        </button>
+        <button className="btn small ghost" onClick={later}>
+          Inte nu
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/** Small, top of the board: which version runs, and whether it is the latest. */
+function VersionBadge({ version, update }: { version: NonNullable<Dash["version"]>; update?: Dash["update"] }) {
+  if (update)
+    return (
+      <button className="version-badge old" onClick={() => window.dispatchEvent(new Event(SHOW_UPDATE))} aria-label={`Version ${version.current}. Ny version ${update.latest} finns – visa hur du uppdaterar`}>
+        v{version.current} · uppdatera till {update.latest}
+      </button>
+    );
+  return (
+    <span className={`version-badge ${version.latest ? "ok" : ""}`} title={version.latest ? "Ni har den senaste versionen" : "Kunde inte se om det finns en nyare version"}>
+      v{version.current}
+      {version.latest ? (
+        <>
+          {" ✓"}
+          <span className="badge-long"> senaste</span>
+        </>
+      ) : null}
+    </span>
+  );
+}
+
 /** "Ny version finns": how to update depends on how the board is installed. */
 function UpdateBanner({ update }: { update: NonNullable<Dash["update"]> }) {
   const [open, setOpen] = useState(false);
@@ -625,6 +824,15 @@ function UpdateBanner({ update }: { update: NonNullable<Dash["update"]> }) {
       return false;
     }
   });
+  // The version badge in the header brings the banner back, opened.
+  useEffect(() => {
+    const show = () => {
+      setHidden(false);
+      setOpen(true);
+    };
+    window.addEventListener(SHOW_UPDATE, show);
+    return () => window.removeEventListener(SHOW_UPDATE, show);
+  }, []);
   if (hidden) return null;
   return (
     <div className="card update-banner" role="status">
@@ -665,23 +873,34 @@ function UpdateBanner({ update }: { update: NonNullable<Dash["update"]> }) {
   );
 }
 
+function personHintUsed() {
+  try {
+    return localStorage.getItem("ft_person_used") === "1";
+  } catch {
+    return false;
+  }
+}
+
 export function Dashboard() {
   const [data, setData] = useState<Dash | null>(null);
   const [error, setError] = useState("");
   // Where we are comes from the address: #/flik/ljus-style tabs and #/sida/maten-style pages,
   // so Android's back button and "Tillbaka" walk back the same way.
   const hash = useHash();
-  const [, kind, id] = hash.split("/");
+  const [, kind, rawId] = hash.split("/");
+  const id = kind === "flik" && rawId === "vacuums" ? "household" : rawId;
   const page = kind === "sida" && PAGE_IDS.includes(id as PageId) ? (id as PageId) : null;
+  const personId = kind === "person" && id ? decodeURIComponent(id) : null;
   const tab: Tab = kind === "flik" && TAB_IDS.includes(id as Tab) ? (id as Tab) : "home";
   const setTab = (t: Tab) => navigate(t === "home" ? "/" : `/flik/${t}`);
   const [planTab, setPlanTab] = useState<"who" | "food">("who");
   const [installOpen, setInstallOpen] = useState(false);
   const [now, setNow] = useState(new Date());
   const [toast, setToast] = useState("");
-  const [grocery, setGrocery] = useState(false);
+  const [grocery, setGrocery] = useState<{ store?: string } | null>(null);
   const [awakeUntil, setAwakeUntil] = useState(0);
   const [themeOverride, setThemeOverride] = useState(readThemeOverride);
+  const [scaleOpen, setScaleOpen] = useState(false);
   const [asking, setAsking] = useState<{ question: string; label: string; fn: () => Promise<unknown> } | null>(null);
   const [eventOpen, setEventOpen] = useState<(DashEvent & { dayLabel?: string }) | null>(null);
   const [planOpen, setPlanOpen] = useState(false);
@@ -775,6 +994,11 @@ export function Dashboard() {
   // few times and say clearly whether it worked.
   const run: Actions["run"] = async (label, fn, verify) => {
     try {
+      try {
+        navigator.vibrate?.(12); // kort känsla i fingret på telefoner som kan (inte iPhone)
+      } catch {
+        /* ingen vibrator: inget händer */
+      }
       await fn();
       let d = await refresh();
       if (!verify) return;
@@ -789,7 +1013,7 @@ export function Dashboard() {
   };
   const actions: Actions = {
     refresh,
-    openGrocery: () => setGrocery(true),
+    openGrocery: (store) => setGrocery({ store }),
     run,
     confirm: (question, label, fn) => setAsking({ question, label, fn }),
     openEvent: setEventOpen,
@@ -810,13 +1034,58 @@ export function Dashboard() {
   // Theme: explicit choice (button) wins, else config: auto follows "dygnsfärger" (light dawn/day, dark dusk/night).
   const phase = data?.header.phase ?? "night";
   // E-ink is a property of the screen, so it wins over the light/dark button too.
-  const theme = data?.theme === "eink" ? "eink" : (themeOverride ?? (data?.theme === "auto" || !data ? (phase === "dawn" || phase === "day" ? "light" : "dark") : data.theme));
+  // "?tema=spegel" or "?tema=eink" in the address sets the look for this screen only (a mirror, an e-ink frame).
+  const screenTheme = ({ spegel: "mirror", mirror: "mirror", eink: "eink" } as const)[new URLSearchParams(location.search).get("tema") ?? ""] as "mirror" | "eink" | undefined;
+  const fixed = screenTheme ?? (data?.theme === "eink" || data?.theme === "mirror" ? data.theme : undefined);
+  const theme = fixed ?? themeOverride ?? (data?.theme === "auto" || !data ? (phase === "dawn" || phase === "day" ? "light" : "dark") : data.theme);
+  // The new flat design has a light and a dark look; e-ink and mirror keep their own.
+  const design = useDesign(data?.design ?? "glass");
+  const { prefs: pagePrefs } = usePagePrefs();
+  const flat = design === "flat" && (theme === "light" || theme === "dark");
+  // On a tablet the board never scrolls: lock the page so it cannot be dragged around (a home-screen app on an iPad can otherwise be pulled in any direction).
+  useEffect(() => {
+    // A real tablet only (both sides at least 600 px): a phone on its side still scrolls above the tab bar.
+    if (Math.min(window.innerWidth, window.innerHeight) < 600) return;
+    const el = document.documentElement;
+    el.classList.add("board-lock");
+    return () => el.classList.remove("board-lock");
+  }, []);
+  // A board on the wall is never reloaded by hand: when the server runs a newer version than this page was built as, load it.
+  // Once per version (a cached page must not loop) and not while a sheet is open.
+  const serverVersion = data?.version?.current;
+  useEffect(() => {
+    if (isDemo || !serverVersion || !/^\d+\.\d+\.\d+$/.test(serverVersion) || serverVersion === __APP_VERSION__) return;
+    const key = "familjetavla.reloadedFor";
+    try {
+      if (sessionStorage.getItem(key) === serverVersion) return;
+    } catch {
+      return;
+    }
+    const tryReload = () => {
+      if (document.querySelector(".overlay")) return false;
+      try {
+        sessionStorage.setItem(key, serverVersion);
+      } catch {
+        /* private mode */
+      }
+      location.reload();
+      return true;
+    };
+    if (tryReload()) return;
+    const t = window.setInterval(() => tryReload() && window.clearInterval(t), 30_000);
+    return () => window.clearInterval(t);
+  }, [serverVersion]);
+  // The new design is made to fit at 100 %: the tablet default of 85 % only applies to the classic one.
+  useEffect(() => {
+    if (!scaleChosen()) applyScale(flat ? 1 : readScale());
+  }, [flat]);
   useEffect(() => {
     const root = document.documentElement;
+    root.dataset.design = flat ? "flat" : "glass";
     root.dataset.theme = theme;
-    root.dataset.phase = theme === "light" || theme === "eink" ? (phase === "dawn" ? "dawn" : "day") : phase === "dusk" ? "dusk" : "night";
+    root.dataset.phase = theme === "light" || theme === "eink" ? (phase === "dawn" ? "dawn" : "day") : theme === "mirror" ? "night" : phase === "dusk" ? "dusk" : "night";
     root.dataset.sky = data?.header.sky ?? "partly";
-  }, [theme, phase, data?.header.sky]);
+  }, [theme, phase, data?.header.sky, flat]);
 
   // Photo frame after N minutes without touch.
   useEffect(() => {
@@ -827,7 +1096,7 @@ export function Dashboard() {
     window.addEventListener("keydown", touch);
     const t = window.setInterval(() => {
       const mins = data?.idle.minutes ?? 0;
-      if (mins > 0 && Date.now() - lastTouch.current > mins * 60_000) setIdle(true);
+      if (mins > 0 && !screensaverOff() && Date.now() - lastTouch.current > mins * 60_000) setIdle(true);
     }, 10_000);
     return () => {
       window.removeEventListener("pointerdown", touch);
@@ -838,7 +1107,13 @@ export function Dashboard() {
 
   // Switch tab with a sliding view transition where the browser supports it.
   const goTab = (next: Tab, list: Tab[]) => {
-    if (next === tab) return;
+    const root = next === "home" ? "/" : `/flik/${next}`;
+    if (next === tab && hash === root) {
+      // Already on the tab's first page: tapping it again goes back to the top of it.
+      window.dispatchEvent(new Event("familjetavla:tab-reset"));
+      window.scrollTo({ top: 0, behavior: "smooth" });
+      return;
+    }
     const dir = list.indexOf(next) > list.indexOf(tab) ? 1 : -1;
     document.documentElement.style.setProperty("--dir", String(dir));
     // The tab lives in the address now (so Android's back button works); the slide comes from CSS.
@@ -852,11 +1127,17 @@ export function Dashboard() {
     if (e.pointerType === "mouse") return;
     const target = e.target as HTMLElement;
     if (target.closest("input, select, textarea, .bars, .chart")) return;
-    gesture.current = { x: e.clientX, y: e.clientY, t: Date.now(), pulling: window.scrollY <= 0 };
+    gesture.current = { x: e.clientX, y: e.clientY, t: Date.now(), pulling: false };
   };
   const onPointerMove = (e: React.PointerEvent) => {
     const g = gesture.current;
     if (!g) return;
+    if (document.documentElement.dataset.volDrag) {
+      // Ett volymsvep pågår (Musik): inget laddar om sidan och inget byter flik.
+      gesture.current = null;
+      setPull(0);
+      return;
+    }
     const dy = e.clientY - g.y;
     const dx = e.clientX - g.x;
     if (g.pulling && dy > 0 && Math.abs(dy) > Math.abs(dx)) setPull(Math.min(110, dy * 0.6));
@@ -867,17 +1148,80 @@ export function Dashboard() {
     if (!g) return;
     const dx = e.clientX - g.x;
     const dy = e.clientY - g.y;
-    if (pull >= 80) {
-      setRefreshing(true);
-      await refresh();
-      setRefreshing(false);
-    }
-    setPull(0);
     if (Math.abs(dx) > 90 && Math.abs(dx) > Math.abs(dy) * 1.8 && Date.now() - g.t < 600) {
       const i = list.indexOf(tab) + (dx < 0 ? 1 : -1);
       if (i >= 0 && i < list.length) goTab(list[i], list);
     }
   };
+
+  // The tablet's volume buttons turn the music that plays, when the board runs in Fully Kiosk Browser
+  // (a plain browser never passes the hardware keys on). Fully reports them as the events volumeUp/volumeDown.
+  const musicRef = useRef(data?.music);
+  musicRef.current = data?.music;
+  useEffect(() => {
+    const fully = (window as unknown as { fully?: { bind?: (ev: string, js: string) => void } }).fully;
+    if (!fully?.bind) return;
+    const step = (dir: 1 | -1) => {
+      const sp = musicRef.current?.speakers.find((x) => x.playing && !x.offline && typeof x.volume === "number");
+      if (!sp) return;
+      const pct = Math.max(0, Math.min(100, Math.round((sp.volume as number) + dir * 5)));
+      void api.volume(sp.entityId, pct).then(() => refresh());
+    };
+    (window as unknown as Record<string, unknown>).__ftVolume = step;
+    fully.bind("volumeUp", "window.__ftVolume(1)");
+    fully.bind("volumeDown", "window.__ftVolume(-1)");
+    return () => {
+      delete (window as unknown as Record<string, unknown>).__ftVolume;
+    };
+  }, [refresh]);
+
+  // Pull down at the top to reload. Touch events (not pointer events): the browser takes over a
+  // vertical pan and cancels the pointer ones. A volume swipe in Musik (only while music plays) wins.
+  useEffect(() => {
+    let y0: number | null = null;
+    let dist = 0;
+    const start = (e: TouchEvent) => {
+      const t = e.target as HTMLElement;
+      // Not from inside an area scrolled down (the week scrolls): the finger then scrolls it back up instead of refreshing.
+      const scrolled = (t.closest(".fit") as HTMLElement | null)?.scrollTop ?? 0;
+      y0 = window.scrollY <= 0 && scrolled <= 0 && e.touches.length === 1 && !t.closest("input, select, textarea, .bars, .chart, .overlay, .vol-overlay") ? e.touches[0]!.clientY : null;
+      dist = 0;
+    };
+    const move = (e: TouchEvent) => {
+      if (y0 === null) return;
+      if (document.documentElement.dataset.volDrag || window.scrollY > 0) {
+        y0 = null;
+        setPull(0);
+        return;
+      }
+      const dy = e.touches[0]!.clientY - y0;
+      if (dy > 8) {
+        dist = Math.min(110, (dy - 8) * 0.6);
+        if (e.cancelable) e.preventDefault();
+        setPull(dist);
+      }
+    };
+    const end = async () => {
+      const go = y0 !== null && dist >= 80;
+      y0 = null;
+      setPull(0);
+      if (go) {
+        setRefreshing(true);
+        await refresh();
+        setRefreshing(false);
+      }
+    };
+    window.addEventListener("touchstart", start, { passive: true });
+    window.addEventListener("touchmove", move, { passive: false });
+    window.addEventListener("touchend", end);
+    window.addEventListener("touchcancel", end);
+    return () => {
+      window.removeEventListener("touchstart", start);
+      window.removeEventListener("touchmove", move);
+      window.removeEventListener("touchend", end);
+      window.removeEventListener("touchcancel", end);
+    };
+  }, [refresh]);
 
   const toggleTheme = () => {
     const next = theme === "dark" ? "light" : "dark";
@@ -901,7 +1245,15 @@ export function Dashboard() {
             </button>
           </div>
         ) : (
-          <span className="muted">Laddar tavlan…</span>
+          <div className="skeleton-board" role="status" aria-label="Laddar tavlan">
+            <div className="skel skel-head" />
+            <div className="skel skel-hero" />
+            <div className="skel-grid">
+              <div className="skel skel-card" />
+              <div className="skel skel-card" />
+              <div className="skel skel-card" />
+            </div>
+          </div>
         )}
       </div>
     );
@@ -911,7 +1263,7 @@ export function Dashboard() {
   const order = (id: Tab) => (id === "home" ? -1 : data.tabs.findIndex((t) => t.id === id));
   const tabs = TABS.filter((t) => t.show(data) && tabOn(t.id)).sort((a, b) => order(a.id) - order(b.id));
   const clock = now.toLocaleTimeString("sv-SE", { hour: "2-digit", minute: "2-digit" });
-  const sleeping = data.night && data.theme !== "eink" && Date.now() > awakeUntil;
+  const sleeping = data.night && !screensaverOff() && data.theme !== "eink" && data.theme !== "mirror" && !screenTheme && Date.now() > awakeUntil;
 
   const tabIds = tabs.map((t) => t.id);
 
@@ -974,13 +1326,31 @@ export function Dashboard() {
                   )}
                 </span>
               )}
-              {data.header.weather && <span>· {data.header.weather}</span>}
+              {data.header.weather && <span className="sub-weather">· {data.header.weather}</span>}
+              {/* Bara på Hem: på andra sidor tog en extra rad i rubriken plats från innehållet (skärmtestet föll på Bil) */}
+              {data.jul?.show && tab === "home" && !page && !personId && tabs.some((t) => t.id === "jul") && <JulChip onOpen={() => goTab("jul", tabIds)} />}
+              {data.version && <VersionBadge version={data.version} update={data.update} />}
             </p>
           </div>
           {data.people.length > 0 && (
-            <div className="people" aria-label="Vem är hemma">
+            <div className={`people ${!personId && !personHintUsed() ? "fresh" : ""}`} aria-label="Vem är hemma – tryck på en person för hens vecka">
               {data.people.map((p) => (
-                <Avatar key={p.name} initial={p.initial} color={p.color} name={p.name} away={!p.home} size="lg" />
+                <button
+                  key={p.name}
+                  className={`avatar-btn ${personId === p.id ? "on" : ""}`}
+                  aria-label={`Visa ${p.name}s vecka`}
+                  title={`Visa ${p.name}s vecka: skola, läxor, träningar och mat`}
+                  onClick={() => {
+                    try {
+                      localStorage.setItem("ft_person_used", "1");
+                    } catch {
+                      /* ingen lagring: tipset visas bara igen */
+                    }
+                    navigate(`/person/${p.id}`);
+                  }}
+                >
+                  <Avatar initial={p.initial} color={p.color} name={p.name} away={!p.home} size="lg" />
+                </button>
               ))}
             </div>
           )}
@@ -988,11 +1358,15 @@ export function Dashboard() {
             {clock}
           </div>
           <div className="row gap">
+            <button className="btn icon scale-btn" aria-label="Skärm: storlek och skärmsläckare" title="Skärm – storlek och skärmsläckare" onClick={() => setScaleOpen(true)}>
+              <Icon name="textsize" size={24} />
+            </button>
             <button className="btn icon" aria-label={theme === "dark" ? "Byt till ljust tema" : "Byt till mörkt tema"} onClick={toggleTheme}>
               <Icon name={theme === "dark" ? "moon" : "sun"} size={24} />
             </button>
+            {/* On a phone the Aa sheet is not offered, so installing stays here (on a tablet it is under Aa). */}
             {!isInstalled() && !isDemo && (
-              <button className="btn icon" aria-label="Installera som app" title="Lägg tavlan på hemskärmen" onClick={() => setInstallOpen(true)}>
+              <button className="btn icon install-phone" aria-label="Installera som app" title="Lägg tavlan på hemskärmen" onClick={() => setInstallOpen(true)}>
                 <Icon name="install" size={24} />
               </button>
             )}
@@ -1001,6 +1375,8 @@ export function Dashboard() {
             </a>
           </div>
         </header>
+
+        {scaleOpen && <ScaleSheet onClose={() => setScaleOpen(false)} onInstall={!isInstalled() && !isDemo ? () => setInstallOpen(true) : undefined} names={data ? weekColumns(data).filter((c) => !c.family).map((c) => c.name) : []} all={data?.people.map((p) => p.name) ?? []} />}
 
         {error && (
           <div className="card result bad" role="status" style={{ padding: "12px 18px" }}>
@@ -1023,44 +1399,43 @@ export function Dashboard() {
         )}
 
         {data.update && <UpdateBanner update={data.update} />}
+        {!isDemo && <InstallNudge onHelp={() => setInstallOpen(true)} />}
 
-        {page ? (
-          <DetailPage page={page} data={data} actions={actions} />
+        {personId ? (
+          <PersonPage data={data} personId={personId} onOpenEvent={actions.openEvent} />
+        ) : page ? (
+          <DetailPage page={page} data={data} actions={actions} flat={flat} />
         ) : (
         <div className="tab-page">
-          {tab !== "home" && <PageBar title={TABS.find((t) => t.id === tab)?.label ?? ""} />}
-          {tab === "home" && <Home data={data} actions={actions} />}
+          {tab !== "home" && <PageBar title={TABS.find((t) => t.id === tab)?.label ?? ""} gearId={`tab:${tab}`} />}
+          {tab === "home" && (flat ? <HomeFlat data={data} actions={actions} /> : <Home data={data} actions={actions} />)}
           {tab !== "home" && (
-            <Fit className="tab-body" deps={[data, tab]}>
+            // The new design never shrinks a tab to make it fit (Mat's text got too small to read): it scrolls, at the size the tab's cog says.
+            <Fit className="tab-body view-in" key={tab} deps={[data, tab]} noShrink={flat} base={pagePrefs[`tab:${tab}`]?.size ?? 1}>
               {tab === "cars" && <CarsPage data={data} actions={actions} />}
               {tab === "lights" && <LightsPage data={data} actions={actions} />}
+              {tab === "security" && <SecurityPage data={data} actions={actions} />}
+              {tab === "household" && <HouseholdPage data={data} actions={actions} />}
+              {tab === "jul" && data.jul && <JulPage jul={data.jul} />}
+              {tab === "food" && <FoodPage data={data} actions={actions} />}
               {tab === "house" && <HousePage data={data} actions={actions} />}
               {tab === "energy" && <EnergyPage data={data} />}
-              {tab === "graphs" && <GraphsPage data={data} />}
+              {tab === "graphs" && <GraphsPage data={data} actions={actions} />}
               {tab === "music" && <MusicPage data={data} actions={actions} />}
-              {tab === "vacuums" && <VacuumPage data={data} actions={actions} />}
             </Fit>
           )}
         </div>
         )}
       </div>
 
-      {tabs.length > 1 && (
-        <nav className="tabbar" aria-label="Flikar">
-          {tabs.map((t) => (
-            <button key={t.id} aria-current={tab === t.id ? "page" : undefined} onClick={() => goTab(t.id, tabIds)}>
-              <Icon name={t.icon} size={24} />
-              {t.short ?? t.label}
-            </button>
-          ))}
-        </nav>
-      )}
+      {tabs.length > 1 && <TabBar tabs={tabs} tab={tab} go={(id) => goTab(id, tabIds)} />}
 
       {grocery && (
         <GroceryModal
-          onClose={() => setGrocery(false)}
+          storeId={grocery.store}
+          onClose={() => setGrocery(null)}
           onDone={(msg) => {
-            setGrocery(false);
+            setGrocery(null);
             showToast(msg);
             refresh();
           }}
@@ -1148,7 +1523,18 @@ export function Dashboard() {
 
       {toast && (
         <div className="toast" role="status">
-          {toast}
+          {/* "✓ …" / "⚠ …" from the actions get a line icon instead of the glyph. */}
+          {toast.startsWith("✓ ") ? (
+            <>
+              <Icon name="check" size={18} /> {toast.slice(2)}
+            </>
+          ) : toast.startsWith("⚠ ") ? (
+            <>
+              <Icon name="alert" size={18} /> {toast.slice(2)}
+            </>
+          ) : (
+            toast
+          )}
         </div>
       )}
     </div>

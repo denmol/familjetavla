@@ -119,7 +119,7 @@ function FloorPlan({ v, picked, toggle }: { v: DashVacuum; picked: string[]; tog
   );
 }
 
-function VacuumView({ v, actions }: { v: DashVacuum; actions: Actions }) {
+export function VacuumView({ v, actions }: { v: DashVacuum; actions: Actions }) {
   const op = useOps(v, actions);
   const [picked, setPicked] = useState<string[]>([]);
   const [twice, setTwice] = useState(false);
@@ -253,32 +253,11 @@ function VacuumView({ v, actions }: { v: DashVacuum; actions: Actions }) {
   );
 }
 
-export function VacuumPage({ data, actions }: { data: Dashboard; actions: Actions }) {
-  const [sel, setSel] = useState(0);
-  const v = data.vacuums[Math.min(sel, data.vacuums.length - 1)];
-  if (!v) return <p className="muted">Välj dammsugare under Inställningar → Huset → Dammsugare.</p>;
-  return (
-    <main className="stack" style={{ gap: 18 }}>
-      {data.vacuums.length > 1 && (
-        <div className="seg" role="tablist" aria-label="Dammsugare">
-          {data.vacuums.map((x, i) => (
-            <button key={x.entityId} role="tab" aria-selected={i === sel} className={`seg-btn ${i === sel ? "on" : ""}`} onClick={() => setSel(i)}>
-              <Icon name="vacuum" size={20} />
-              {x.name}
-            </button>
-          ))}
-        </div>
-      )}
-      <VacuumView v={v} actions={actions} />
-    </main>
-  );
-}
-
 const widget: WidgetModule = {
   id: "vacuums",
   label: "Dammsugare",
   size: (data) => (data.vacuums.length ? 1 + data.vacuums.length * 2 : 0),
   render: ({ data, actions }) => <Vacuums data={data} actions={actions} />,
-  opens: { tab: "vacuums" },
+  opens: { tab: "household" },
 };
 export default widget;

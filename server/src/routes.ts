@@ -1,26 +1,36 @@
+import { secureUrl } from "./https.js";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { z } from "zod";
 import { cached, invalidate } from "./cache.js";
+import { fetchWithTimeout } from "./http.js";
 import { lookupPostcode } from "./connectors/geo.js";
 import { detectGroups, fetchIcs, filterEvents } from "./connectors/ics.js";
-import { ha, haConnection, type HaState } from "./connectors/ha.js";
-import { fetchWithTimeout } from "./http.js";
 import { opCall, roomCalls, roomsOf } from "./vacuum.js";
+import { ha, haConnection, type HaState } from "./connectors/ha.js";
 import { geocode } from "./connectors/weather.js";
-import { buildDashboard, gatherFamily } from "./dashboard.js";
+import { buildCalendar, buildDashboard, buildPersonDays, gatherFamily } from "./dashboard.js";
 import { duties, dutiesIcs } from "./plan.js";
 import { loadShelf, saveDinner, saveShelf } from "./meals.js";
 import { carActions, carAnchor, carCharging, carRows, deviceEntities, discover, readRegistry } from "./discovery.js";
 import { runEntityAction } from "./scheduler.js";
+import { findAutoModes, findSmartCharging } from "./smartcharging.js";
+import { loadChores, saveChores, setChoreDone } from "./chores.js";
+import { applyJulNice, JUL_NICE_SERVICES, loadJulNice } from "./julnice.js";
+import { chargingEntities, deleteOwnPlan, readCharging, saveOwnPlan, setChargeEntity } from "./chargeplan.js";
 import { haSocket } from "./connectors/haws.js";
 import { energyLive, liveEnergyIds } from "./energy.js";
 import { publishToHa } from "./publisher.js";
 import { MULTIPLE, allMeta, findProvider, makeCtx, secretKey } from "./providers/registry.js";
-import { calendarEvents, groceryIntegration, newsFiles } from "./sources.js";
+import { calendarEvents, groceryIntegration, groceryIntegrations, newsFiles } from "./sources.js";
+import { icaListId, icaStrike } from "./connectors/ica.js";
+import { ICA_LIST, SHOW, icaRun } from "./providers/grocery.js";
 import { addOwnEvent, markNewsSeen, removeOwnEvent } from "./news.js";
 import { vklassFile, vklassLogin } from "./connectors/vklass.js";
 import { saveTravel } from "./travel.js";
+import { allowedToTurnOn } from "./quiet.js";
+import { docxToHtml, downloadHeader, isDocx, safeFileName } from "./docview.js";
+import { docxToPdf } from "./docpdf.js";
 import {
   deletePhoto,
   getSecret,
@@ -29,20 +39,24 @@ import {
   loadConfig,
   loadDevices,
   saveDevices,
+  loadLocal,
   loadLocalList,
   photoPath,
   saveConfig,
+  saveLocal,
   saveLocalList,
   savePhoto,
   setSecret,
 } from "./store.js";
 import { readFileSync } from "node:fs";
 import { addDays, dayKey, hhmm, shortDate, shortWeekday, startOfDay } from "./time.js";
-import { setSick } from "./sick.js";
+import { setLeave, setSick } from "./sick.js";
 import { makeBackup, restoreBackup } from "./backup.js";
 import { follows } from "./notify.js";
-import { findStations, playCall, spotifyPlayer, swedishStations } from "./music.js";
-import { HOME_WIDGETS, TAB_IDS, type Config, type ConfigResponse, type Integration, type IntegrationCategory, type Schedule, type SecretKey } from "./types.js";
+import { findStations, playCall, spotifyPlayer, spotifyUri, swedishStations } from "./music.js";
+import { alarmCall, robotCall } from "./security.js";
+import { MEDIA_TYPES, SHELVES, isMaPlayer, knownPlayers, setGroup as maSetGroup, type Shelf, library as maLibrary, playOn as maPlayOn, search as maSearch, tracksOf as maTracks } from "./musicAssistant.js";
+import { BUTTON_PLACES, HOME_WIDGETS, TAB_IDS, type Config, type FoodPart, type StoreFood, type StoreFoodData, type ConfigResponse, type Integration, type IntegrationCategory, type Schedule, type SecretKey } from "./types.js";
 
 export { VERSION } from "./version.js";
 import { VERSION } from "./version.js";
@@ -138,7 +152,10 @@ const personSchema = z.object({
       before: z.number().int().min(0).max(240).optional(),
       evening: z.boolean().optional(),
       weekly: z.boolean().optional(),
+      home: z.boolean().optional(),
+      updates: z.boolean().optional(),
       morning: z.union([z.literal(""), z.string().regex(/^\d{2}:\d{2}$/)]).optional(),
+      waste: z.union([z.literal(""), z.string().regex(/^\d{2}:\d{2}$/)]).optional(),
       children: z.array(z.string().regex(ID)).max(20).optional(),
     })
     .optional(),
@@ -161,7 +178,8 @@ const calendarSchema = z.object({
   kind: z.enum(["ics", "ha"]),
   entityId: z.string().optional(),
   personId: z.string().optional(),
-  category: z.enum(["family", "sport", "school", "work", "other"]),
+  personIds: z.array(z.string().regex(ID)).max(12).optional(),
+  category: z.enum(["family", "sport", "school", "work", "dinner", "other"]),
   include: z.array(z.string().max(60)).max(20).optional(),
   exclude: z.array(z.string().max(60)).max(20).optional(),
   visibility: z.enum(["custody", "always"]).optional(),
@@ -215,13 +233,16 @@ export const configSchema = z
     people: z.array(personSchema).max(12),
     calendars: z.array(calendarSchema).max(40),
     integrations: z.array(integrationSchema).max(20),
+    todo: z.object({ entityId: entity.optional(), title: z.string().max(30).optional() }).optional(),
     shopping: z.object({
       source: z.enum(["local", "ha"]),
       entityId: entity.optional(),
+      sendTo: z.string().regex(ID).optional(),
       mappings: z.record(z.record(z.object({ code: z.string(), name: z.string() }))),
     }),
     electricity: z.object({
       cheapHours: z.number().int().min(1).max(8),
+      resolution: z.enum(["hour", "quarter"]).optional(),
       markupOre: z.number().min(0).max(500),
       gridOre: z.number().min(0).max(500),
       taxOre: z.number().min(0).max(500),
@@ -231,7 +252,7 @@ export const configSchema = z
     schedules: z.array(scheduleSchema).max(40),
     entities: z.object({
       cars: z
-        .array(z.object({ name: label(40), battery: entity.optional(), fuel: entity.optional(), tankLiters: z.number().min(5).max(500).optional(), range: entity.optional(), location: entity.optional(), charging: entity.optional(), climate: entity.optional() }))
+        .array(z.object({ name: label(40), battery: entity.optional(), fuel: entity.optional(), tankLiters: z.number().min(5).max(500).optional(), range: entity.optional(), location: entity.optional(), charging: entity.optional(), climate: entity.optional(), plan: entity.optional(), mode: entity.optional() }))
         .max(6),
       energy: z.object({
         solar: entity.optional(),
@@ -239,15 +260,22 @@ export const configSchema = z
         gridExport: entity.optional(),
         house: entity.optional(),
         battery: entity.optional(),
+        batteryPower: entity.optional(),
+        batteryChargePositive: z.boolean().optional(),
         solarEnergy: entity.optional(),
         importEnergy: entity.optional(),
         exportEnergy: entity.optional(),
+        batteryChargeEnergy: entity.optional(),
+        batteryDischargeEnergy: entity.optional(),
       }),
       lights: z.array(z.object({ name: label(40), entityId: entity })).max(16),
       temps: z.array(z.object({ name: label(40), entityId: entity })).max(8),
-      lightGroups: z.array(z.object({ name: label(40), entities: z.array(entity).max(40) })).max(12),
+      lightGroups: z.array(z.object({ name: label(40), entities: z.array(entity).max(40), place: z.enum(BUTTON_PLACES).optional() })).max(12),
+      quietLights: z
+        .object({ entities: z.array(entity).max(20), from: z.string().regex(/^\d{2}:\d{2}$/), to: z.string().regex(/^\d{2}:\d{2}$/) })
+        .optional(),
       buttons: z
-        .array(z.object({ name: label(40), entityId: entity.regex(/^(scene|script|button|input_button|automation)\./), style: z.enum(["accent", "blue", "amber", "plain"]) }))
+        .array(z.object({ name: label(40), entityId: entity.regex(/^(scene|script|button|input_button|automation)\./), style: z.enum(["accent", "blue", "amber", "plain"]), place: z.enum(BUTTON_PLACES).optional() }))
         .max(12),
       climates: z
         .array(z.object({ name: label(40), entityId: entity.regex(/^(climate|water_heater)\./), controls: z.array(entity).max(8).optional() }))
@@ -279,24 +307,60 @@ export const configSchema = z
         .array(z.object({ name: label(40), url: z.string().url().max(500).regex(/^https?:\/\//), logo: z.string().url().max(500).regex(/^https:\/\//).optional() }))
         .max(16)
         .optional(),
+      security: z
+        .object({
+          cameras: z.array(z.object({ name: label(40), entityId: entity.regex(/^camera\./) })).max(16),
+          locks: z.array(z.object({ name: label(40), entityId: entity.regex(/^lock\./) })).max(12),
+          alarms: z.array(z.object({ name: label(40), entityId: entity.regex(/^alarm_control_panel\./) })).max(4),
+          covers: z.array(z.object({ name: label(40), entityId: entity.regex(/^cover\./) })).max(8),
+          openings: z.array(z.object({ name: label(40), entityId: entity.regex(/^binary_sensor\./) })).max(40),
+          allowUnlock: z.boolean().optional(),
+        })
+        .optional(),
+      robots: z
+        .array(z.object({ name: label(40), entityId: entity.regex(/^(vacuum|lawn_mower)\./), battery: entity.regex(/^sensor\./).optional() }))
+        .max(8)
+        .optional(),
+      appliances: z
+        .array(
+          z.object({
+            name: label(40),
+            kind: z.enum(["washer", "dryer", "dishwasher", "oven", "other"]),
+            status: entity.optional(),
+            remaining: entity.optional(),
+            progress: entity.optional(),
+            power: entity.optional(),
+          }),
+        )
+        .max(10)
+        .optional(),
     }),
     dashboard: z.object({
       accent: z.string().regex(/^#[0-9a-fA-F]{6}$/),
-      theme: z.enum(["auto", "dark", "light", "eink"]),
+      theme: z.enum(["auto", "dark", "light", "eink", "mirror"]),
       home: z.array(z.object({ id: z.enum(HOME_WIDGETS), on: z.boolean(), size: z.enum(["auto", "s", "m", "l"]).optional() })).max(20),
-      tabs: z.array(z.object({ id: z.enum(TAB_IDS), on: z.boolean() })).max(10),
+      tabs: z.array(z.object({ id: z.enum(TAB_IDS), on: z.boolean() })).max(12),
       nightFrom: z.string().regex(/^\d{2}:\d{2}$/),
       nightTo: z.string().regex(/^\d{2}:\d{2}$/),
       idleMinutes: z.number().int().min(0).max(240).default(10),
+      nightMode: z.boolean().optional(),
+      design: z.enum(["flat", "glass"]).optional(),
+      sunArc: z.boolean().optional(),
+      christmas: z.enum(["auto", "on", "off"]).optional(),
+      lessons: z.enum(["all", "span"]).optional(),
+      hidden: z.array(z.string().max(160)).max(500).optional(),
     }),
   })
   .superRefine((c, ctx) => {
     for (const i of c.integrations) {
       if (!findProvider(i.category as IntegrationCategory, i.provider)) ctx.addIssue({ code: "custom", message: `okänd leverantör ${i.provider}`, path: ["integrations"] });
     }
-    for (const cat of ["grocery", "waste", "price"] as const) {
+    for (const cat of ["waste", "price"] as const) {
       if (c.integrations.filter((i) => i.category === cat).length > 1) ctx.addIssue({ code: "custom", message: `bara en ${cat} åt gången`, path: ["integrations"] });
     }
+    // Several stores are fine, but each only once.
+    const stores = c.integrations.filter((i) => i.category === "grocery").map((i) => i.provider);
+    if (new Set(stores).size !== stores.length) ctx.addIssue({ code: "custom", message: "samma butik två gånger", path: ["integrations"] });
   });
 
 function allowedSecret(k: string): k is SecretKey {
@@ -312,10 +376,26 @@ function isUserSecret(k: string, cfg: Config): boolean {
   return Boolean(provider?.meta.fields.some((f) => f.key === m[2] && f.secret));
 }
 
+/** What a test vouches for: the provider and every field (secrets from `typed` or the stored ones). Any edit changes it. */
+function fingerprint(integ: Integration, typed: Record<string, string> = {}): string | null {
+  const provider = findProvider(integ.category, integ.provider);
+  if (!provider) return null;
+  // Only what the sign-in depends on: changing a display choice (which shop, what Mat shows) keeps the "logged in" mark.
+  const values = provider.meta.fields
+    .filter((f) => f.type !== "toggle" && f.key !== "store" && f.key !== "list")
+    .map((f) => (f.secret ? (typed[f.key] || getSecret(secretKey(integ.id, f.key)) || "") : String(integ.settings[f.key] ?? "").trim()));
+  return createHash("sha256").update(JSON.stringify([integ.provider, values])).digest("hex");
+}
+
 function configResponse(): ConfigResponse {
+  const config = loadConfig();
   return {
-    config: loadConfig(),
-    secretsSet: listSecretKeys().filter((k) => !k.endsWith(".session")),
+    config,
+    verified: config.integrations.filter((i) => {
+      const fp = fingerprint(i);
+      return fp !== null && getSecret(secretKey(i.id, "ok")) === fp;
+    }).map((i) => i.id),
+    secretsSet: listSecretKeys().filter((k) => !k.endsWith(".session") && !k.endsWith(".ok")),
     providers: allMeta(),
     runtime: { supervisor: Boolean(process.env.SUPERVISOR_TOKEN), version: VERSION, pinRequired: Boolean(getSecret("admin.pin")) },
   };
@@ -326,6 +406,8 @@ const previewEvent = (e: { start: Date; allDay: boolean; title: string }) =>
 
 export async function registerRoutes(app: FastifyInstance) {
   app.get("/api/health", async () => ({ ok: true, version: VERSION }));
+  // Where the board runs over https (same certificate as Home Assistant), for "Installera som app".
+  app.get("/api/secure-url", async () => ({ url: secureUrl() }));
 
   app.addHook("onRequest", async (req, reply) => {
     const path = req.url.split("?")[0];
@@ -377,6 +459,11 @@ export async function registerRoutes(app: FastifyInstance) {
     for (const [k, v] of Object.entries(body.secrets ?? {})) {
       if (!isUserSecret(k, next)) return fail(reply, new Error(`Okänd hemlighet ${k}`));
       if (k === "admin.pin" && v && !/^\d{4,8}$/.test(String(v))) return fail(reply, new Error("PIN-koden ska vara 4–8 siffror."));
+    }
+    // Another provider in the same slot must not inherit the old one's password or session.
+    for (const i of next.integrations) {
+      const was = prev.integrations.find((x) => x.id === i.id);
+      if (was && was.provider !== i.provider) for (const k of listSecretKeys()) if (k.startsWith(`int.${i.id}.`)) setSecret(k as SecretKey, null);
     }
     for (const [k, v] of Object.entries(body.secrets ?? {})) setSecret(k as SecretKey, v);
     // Setting a PIN here must not lock out the screen doing it.
@@ -451,6 +538,26 @@ export async function registerRoutes(app: FastifyInstance) {
 
   // ---------- Dashboard ----------
   app.get("/api/dashboard", async () => buildDashboard());
+
+  /**
+   * Further ahead than the board's seven days (#37): page 1 is days 7–13, page 2 days 14–20 … up to eight weeks.
+   * The board itself stays at seven days; only the week page asks for this.
+   */
+  app.get("/api/calendar", async (req, reply) => {
+    const q = z.object({ page: z.coerce.number().int().min(1).max(8) }).safeParse(req.query);
+    if (!q.success) return reply.code(400).send({ error: "page måste vara 1–8" });
+    const page = q.data.page;
+    return cached(`calendar:${page}:${new Date().toDateString()}`, 3 * 60_000, () => buildCalendar(page * 7, 7));
+  });
+
+  /** One child's own view: everything of theirs, also on the days they are at the other home (page 0 … 8, a week each). */
+  app.get("/api/person-days", async (req, reply) => {
+    const q = z.object({ id: z.string().min(1).max(40), page: z.coerce.number().int().min(0).max(8) }).safeParse(req.query);
+    if (!q.success) return reply.code(400).send({ error: "id och page (0–8) behövs" });
+    if (!loadConfig().people.some((p) => p.id === q.data.id)) return reply.code(404).send({ error: "Personen finns inte" });
+    const { id, page } = q.data;
+    return cached(`person-days:${id}:${page}:${new Date().toDateString()}`, 3 * 60_000, () => buildPersonDays(id, page));
+  });
 
   /**
    * Server-Sent Events: tells open boards to refresh when something on the board changes in HA
@@ -542,7 +649,31 @@ export async function registerRoutes(app: FastifyInstance) {
     if (!provider) return fail(reply, new Error("Okänd leverantör"));
     if (provider.meta.needsHa && !haConnection()) return fail(reply, new Error("Anslut Home Assistant först."));
     try {
-      return await provider.test(makeCtx(integ, secrets ?? {}));
+      // A shop that never answers must not leave the screen waiting.
+      const result = await Promise.race([
+        provider.test(makeCtx(integ, secrets ?? {})),
+        new Promise<never>((_, no) => setTimeout(() => no(new Error("Testet tog för lång tid – butikens sida svarar inte. Försök igen om en stund.")), 85_000).unref()),
+      ]);
+      // A test that went through (and does not ask for more) is remembered for exactly these values.
+      const fp = fingerprint(integ, secrets ?? {});
+      setSecret(secretKey(integ.id, "ok"), result.ok && !result.choices && fp ? fp : null);
+      return result;
+    } catch (e) {
+      setSecret(secretKey(integ.id, "ok"), null);
+      return fail(reply, e);
+    }
+  });
+
+  /** The shops to pick from, for a provider that has a list (the sign-in typed in the wizard is used when it is needed). */
+  app.post("/api/providers/stores", { preHandler: guard }, async (req, reply) => {
+    const { integration, secrets } = (req.body ?? {}) as { integration?: Integration; secrets?: Record<string, string> };
+    const parsed = integrationSchema.safeParse(integration);
+    if (!parsed.success) return fail(reply, new Error("Ogiltig koppling"));
+    const integ = parsed.data as Integration;
+    const provider = findProvider(integ.category, integ.provider);
+    if (!provider || !("stores" in provider) || !provider.stores) return [];
+    try {
+      return await provider.stores(makeCtx(integ, secrets ?? {}));
     } catch (e) {
       return fail(reply, e);
     }
@@ -643,9 +774,14 @@ export async function registerRoutes(app: FastifyInstance) {
   });
 
   // ---------- Grocery: send the shopping list to a store ----------
-  app.post("/api/grocery/preview", async (_req, reply) => {
+  /** The store named in the request (its integration id), else the one the list is set to go to. */
+  const storeFor = (cfg: Config, body: unknown) => {
+    const id = (body as { store?: string } | null)?.store;
+    return (id ? groceryIntegrations(cfg).find((x) => x.integ.id === id) : undefined) ?? groceryIntegration(cfg);
+  };
+  app.post("/api/grocery/preview", async (req, reply) => {
     const cfg = loadConfig();
-    const g = groceryIntegration(cfg);
+    const g = storeFor(cfg, req.body);
     if (!g) return fail(reply, new Error("Ingen butik vald."));
     const dash = await buildDashboard();
     const remembered = cfg.shopping.mappings[g.provider.meta.id] ?? {};
@@ -662,20 +798,86 @@ export async function registerRoutes(app: FastifyInstance) {
     return { store: g.provider.meta.name, lines };
   });
 
+  // ---------- Mat: every chosen store; the content of a part is fetched when it is opened ----------
+  const partOnFor = (settings: Record<string, unknown>, part: FoodPart) => settings[SHOW[part]] !== "false" && settings[SHOW[part]] !== false;
+  app.get("/api/food/stores", async (): Promise<StoreFood[]> =>
+    groceryIntegrations(loadConfig()).flatMap((g) =>
+      g.provider.food ? [{ id: g.integ.id, provider: g.provider.meta.id, name: g.provider.meta.name, parts: g.provider.food.parts.filter((p) => partOnFor(g.integ.settings, p)) }] : [],
+    ),
+  );
+  /** The shops to switch between on the Mat tab (the board's own, from what is saved). */
+  app.get("/api/food/stores/:id/choices", async (req, reply) => {
+    const id = String((req.params as { id?: string }).id ?? "");
+    const g = groceryIntegrations(loadConfig()).find((x) => x.integ.id === id);
+    if (!g?.provider.stores) return { options: [], value: "" };
+    try {
+      return { options: await g.provider.stores(makeCtx(g.integ)), value: String(g.integ.settings.store ?? "") };
+    } catch (e) {
+      return fail(reply, e, 502);
+    }
+  });
+  app.post("/api/food/stores/:id/store", { preHandler: guard }, async (req, reply) => {
+    const id = String((req.params as { id?: string }).id ?? "");
+    const body = z.object({ value: z.string().max(80) }).safeParse(req.body);
+    if (!body.success) return fail(reply, new Error("Ogiltig butik"));
+    const cfg = loadConfig();
+    const integ = cfg.integrations.find((i) => i.id === id && i.category === "grocery");
+    if (!integ) return fail(reply, new Error("Okänd butik"));
+    integ.settings = { ...integ.settings, store: body.data.value };
+    saveConfig(cfg);
+    invalidate();
+    return { ok: true };
+  });
+
+  app.get("/api/food/stores/:id/:part", async (req, reply): Promise<StoreFoodData | void> => {
+    const q = z.object({ id: z.string().regex(ID), part: z.enum(["list", "cart", "common", "offers", "recipes"]) }).safeParse(req.params);
+    if (!q.success) return fail(reply, new Error("Okänd del"));
+    const g = groceryIntegrations(loadConfig()).find((x) => x.integ.id === q.data.id);
+    if (!g?.provider.food || !g.provider.food.parts.includes(q.data.part) || !partOnFor(g.integ.settings, q.data.part)) return fail(reply, new Error("Den delen visas inte."));
+    try {
+      return await g.provider.food.load(makeCtx(g.integ), q.data.part);
+    } catch (e) {
+      return { errors: { [q.data.part]: (e as Error).message } };
+    }
+  });
+
+  app.post("/api/food/ica/strike", async (req, reply) => {
+    const body = z.object({ id: z.string().min(1).max(80), name: z.string().min(1).max(120), done: z.boolean() }).safeParse(req.body);
+    if (!body.success) return fail(reply, new Error("Ogiltig rad"));
+    const g = groceryIntegrations(loadConfig()).find((x) => x.provider.meta.id === "ica");
+    if (!g) return fail(reply, new Error("ICA är inte vald."));
+    const ctx = makeCtx(g.integ);
+    try {
+      await icaRun(ctx, async (s) => icaStrike(s, await icaListId(s, ctx.str("list") || ICA_LIST), body.data, body.data.done));
+      return { ok: true };
+    } catch (e) {
+      return fail(reply, e, 502);
+    }
+  });
+
   app.post("/api/grocery/send", async (req, reply) => {
     const { lines } = (req.body ?? {}) as { lines?: { item: string; code: string; name: string; qty?: number }[] };
     if (!lines?.length) return fail(reply, new Error("Inget att skicka."));
     const cfg = loadConfig();
-    const g = groceryIntegration(cfg);
+    const g = storeFor(cfg, req.body);
     if (!g) return fail(reply, new Error("Ingen butik vald."));
     try {
       const result = await g.provider.addToCart(
         makeCtx(g.integ),
-        lines.map((l) => ({ code: l.code, qty: Math.max(1, Math.min(20, Math.round(l.qty ?? 1))) })),
+        lines.map((l) => {
+          const local = loadLocalList().find((i) => !i.done && i.name.trim().toLowerCase() === l.item.trim().toLowerCase());
+          return { code: l.code, qty: Math.max(1, Math.min(20, Math.round(l.qty ?? 1))), item: l.item, offerId: local?.offer?.store === g.integ.id ? local.offer.id : undefined };
+        }),
       );
       const map = (cfg.shopping.mappings[g.provider.meta.id] ??= {});
       for (const l of lines) map[l.item.trim().toLowerCase()] = { code: l.code, name: l.name };
       saveConfig(cfg);
+      // Remember what went where, so the shopping list can show it.
+      const sent = { ...(loadLocal().sentToStore ?? {}) };
+      const at = new Date().toISOString();
+      for (const l of lines) sent[l.item.trim().toLowerCase()] = { store: g.provider.meta.name, at };
+      saveLocal({ sentToStore: sent });
+      invalidate();
       return { ok: true, store: g.provider.meta.name, ...result };
     } catch (e) {
       return fail(reply, e, 502);
@@ -706,6 +908,35 @@ export async function registerRoutes(app: FastifyInstance) {
     return { ok: true };
   });
 
+  /** Long press on the board: new order of the home cards, or one hidden. Same rights as the settings. */
+  app.post("/api/home-layout", { preHandler: guard }, async (req, reply) => {
+    const body = z.object({ home: z.array(z.object({ id: z.enum(HOME_WIDGETS), on: z.boolean() })).max(20) }).safeParse(req.body);
+    if (!body.success) return fail(reply, new Error("Ogiltig ordning"));
+    const cfg = loadConfig();
+    const old = new Map(cfg.dashboard.home.map((w) => [w.id, w]));
+    const seen = new Set<string>();
+    const next = body.data.home.filter((w) => !seen.has(w.id) && seen.add(w.id)).map((w) => ({ ...old.get(w.id), id: w.id, on: w.on }));
+    // Cards the board did not send (none should be missing) keep their place at the end.
+    for (const w of cfg.dashboard.home) if (!seen.has(w.id)) next.push(w);
+    cfg.dashboard.home = next;
+    saveConfig(cfg);
+    return { ok: true, home: next };
+  });
+
+  /** The cog on a page → "Ta bort saker": one button, card or choice taken away (or back). Same rights as the settings. */
+  app.post("/api/hidden", { preHandler: guard }, async (req, reply) => {
+    const body = z.object({ key: z.string().min(3).max(160).regex(/^[a-z0-9_]+\.[a-z0-9_]+(#.{1,100})?$|^[a-z]+:.{1,100}$/), hidden: z.boolean() }).safeParse(req.body);
+    if (!body.success) return fail(reply, new Error("Okänd sak att ta bort"));
+    const cfg = loadConfig();
+    const now = new Set(cfg.dashboard.hidden ?? []);
+    if (body.data.hidden) now.add(body.data.key);
+    else now.delete(body.data.key);
+    if (now.size > 500) return fail(reply, new Error("För många borttagna saker"));
+    cfg.dashboard.hidden = [...now];
+    saveConfig(cfg);
+    return { ok: true, hidden: cfg.dashboard.hidden };
+  });
+
   app.post("/api/lights/off", async (_req, reply) => {
     const cfg = loadConfig();
     const conn = haConnection();
@@ -719,7 +950,47 @@ export async function registerRoutes(app: FastifyInstance) {
 
   // ---------- Musik ----------
   /** Only speakers on the board can be played on. */
+  /** A speaker or soundbar in standby is turned on before it is asked to play. */
+  const wake = async (conn: NonNullable<ReturnType<typeof haConnection>>, id: string) => {
+    const st = await ha.state(conn, id).catch(() => undefined);
+    if (st?.state === "off") await ha.service(conn, "media_player", "turn_on", { entity_id: id }).catch(() => undefined);
+    // The volume last chosen on the board for this speaker, so the kitchen is never suddenly too loud.
+    const last = loadLocal().volumes?.[id];
+    const now = (st?.attributes as { volume_level?: number } | undefined)?.volume_level;
+    if (typeof last === "number" && (typeof now !== "number" || Math.round(now * 100) !== last))
+      await ha.service(conn, "media_player", "volume_set", { entity_id: id, volume_level: last / 100 }).catch(() => undefined);
+  };
   const speakerOf = (id: unknown) => (typeof id === "string" ? (loadConfig().entities.speakers ?? []).find((x) => x.entityId === id) : undefined);
+  /** A speaker playing together with others (#93): its Music Assistant player leads the group, so the radio goes there. */
+  const groupLead = async (conn: NonNullable<ReturnType<typeof haConnection>>, id: string) => {
+    const states = new Map((await ha.states(conn)).map((s) => [s.entity_id, s]));
+    const lead = knownPlayers(loadConfig().entities.speakers ?? [], states).get(id);
+    const members = (states.get(lead ?? "")?.attributes as { group_members?: string[] } | undefined)?.group_members ?? [];
+    return lead && members.filter((m) => m !== lead).length > 0 ? lead : undefined;
+  };
+
+  /**
+   * Starts a station on a speaker. A plain play_media with the stream URL suits Google, Sonos and most others; a Music Assistant player
+   * (AirPlay, HomePod, Sonos through Music Assistant …) takes a stream as a "radio" item, so it goes there first and falls back to the plain call.
+   */
+  const startStation = async (conn: NonNullable<ReturnType<typeof haConnection>>, speaker: string, station: { name: string; url: string; logo?: string }) => {
+    const st = await ha.state(conn, speaker).catch(() => undefined);
+    const plain = playCall(speaker, station);
+    if (isMaPlayer(st)) {
+      try {
+        await ha.service(conn, "music_assistant", "play_media", { entity_id: speaker, media_id: station.url, media_type: "radio", enqueue: "replace" });
+        return;
+      } catch (e1) {
+        try {
+          await ha.service(conn, plain.domain, plain.service, plain.data);
+          return;
+        } catch {
+          throw e1;
+        }
+      }
+    }
+    await ha.service(conn, plain.domain, plain.service, plain.data);
+  };
 
   app.post("/api/music/play", async (req, reply) => {
     const body = z.object({ index: z.number().int().min(0), speaker: entity }).safeParse(req.body);
@@ -727,9 +998,9 @@ export async function registerRoutes(app: FastifyInstance) {
     if (!body.success || !station || !speakerOf(body.data.speaker)) return fail(reply, new Error("Okänd kanal eller högtalare"));
     const conn = haConnection();
     if (!conn) return fail(reply, new Error("Home Assistant är inte anslutet."));
-    const c = playCall(body.data.speaker, station);
+    await wake(conn, body.data.speaker);
     try {
-      await ha.service(conn, c.domain, c.service, c.data);
+      await startStation(conn, (await groupLead(conn, body.data.speaker).catch(() => undefined)) ?? body.data.speaker, station);
     } catch (e) {
       return fail(reply, new Error(`${speakerOf(body.data.speaker)!.name} kunde inte spela ${station.name}: ${(e as Error).message}`), 502);
     }
@@ -742,11 +1013,44 @@ export async function registerRoutes(app: FastifyInstance) {
     if (!speakerOf(speaker)) return fail(reply, new Error("Okänd högtalare"));
     const conn = haConnection();
     if (!conn) return fail(reply, new Error("Home Assistant är inte anslutet."));
+    // Speakers playing together: stopping the group's leader silences all of them.
+    const lead = await groupLead(conn, speaker!).catch(() => undefined);
+    if (lead) await ha.service(conn, "media_player", "media_stop", { entity_id: lead }).catch(() => undefined);
     // Not every speaker can stop (some only pause); media_stop falls back to pause there.
     try {
       await ha.service(conn, "media_player", "media_stop", { entity_id: speaker });
     } catch {
       await ha.service(conn, "media_player", "media_pause", { entity_id: speaker });
+    }
+    invalidate("ha:states");
+    return { ok: true };
+  });
+
+  // Omslaget till det som spelas, via tavlans server (token når aldrig webbläsaren).
+  app.get("/api/music/cover/:entityId", async (req, reply) => {
+    const id = (req.params as { entityId: string }).entityId;
+    const conn = haConnection();
+    if (!speakerOf(id) || !conn) return fail(reply, new Error("Okänd högtalare"));
+    try {
+      const res = await fetchWithTimeout(`${conn.base}/media_player_proxy/${encodeURIComponent(id)}`, { timeoutMs: 8000, headers: { authorization: `Bearer ${conn.token}` } });
+      if (!res.ok) throw new Error(`Omslaget svarade ${res.status}`);
+      return reply.header("cache-control", "private, max-age=300").type(res.headers.get("content-type") ?? "image/jpeg").send(Buffer.from(await res.arrayBuffer()));
+    } catch (e) {
+      return fail(reply, e, 404);
+    }
+  });
+
+  // Spela/paus, nästa och föregående på en högtalare.
+  app.post("/api/music/transport", async (req, reply) => {
+    const body = z.object({ speaker: entity, action: z.enum(["play_pause", "next", "previous"]) }).safeParse(req.body);
+    if (!body.success || !speakerOf(body.data.speaker)) return fail(reply, new Error("Okänd högtalare"));
+    const conn = haConnection();
+    if (!conn) return fail(reply, new Error("Home Assistant är inte anslutet."));
+    const svc = { play_pause: "media_play_pause", next: "media_next_track", previous: "media_previous_track" }[body.data.action];
+    try {
+      await ha.service(conn, "media_player", svc, { entity_id: body.data.speaker });
+    } catch (e) {
+      return fail(reply, e);
     }
     invalidate("ha:states");
     return { ok: true };
@@ -758,6 +1062,7 @@ export async function registerRoutes(app: FastifyInstance) {
     const conn = haConnection();
     if (!conn) return fail(reply, new Error("Home Assistant är inte anslutet."));
     await ha.service(conn, "media_player", "volume_set", { entity_id: body.data.speaker, volume_level: body.data.pct / 100 });
+    saveLocal({ volumes: { ...loadLocal().volumes, [body.data.speaker]: body.data.pct } });
     invalidate("ha:states");
     return { ok: true };
   });
@@ -778,9 +1083,9 @@ export async function registerRoutes(app: FastifyInstance) {
     if (!station) return fail(reply, new Error("Kanalen finns inte i katalogen längre"));
     const conn = haConnection();
     if (!conn) return fail(reply, new Error("Home Assistant är inte anslutet."));
-    const c = playCall(body.data.speaker, station);
+    await wake(conn, body.data.speaker);
     try {
-      await ha.service(conn, c.domain, c.service, c.data);
+      await startStation(conn, (await groupLead(conn, body.data.speaker).catch(() => undefined)) ?? body.data.speaker, station);
     } catch (e) {
       return fail(reply, new Error(`${speakerOf(body.data.speaker)!.name} kunde inte spela ${station.name}: ${(e as Error).message}`), 502);
     }
@@ -819,15 +1124,174 @@ export async function registerRoutes(app: FastifyInstance) {
     return { ok: true };
   });
 
+  // Music Assistant: the library as covers (Spotify playlists, albums, podcasts) and search.
+  const boardSpeakers = () => (loadConfig().entities.speakers ?? []).map((s) => s.entityId);
+  app.get("/api/music/library", async (req, reply) => {
+    const q = z.object({ shelf: z.enum(Object.keys(SHELVES) as [Shelf, ...Shelf[]]), offset: z.coerce.number().int().min(0).max(5000).optional() }).safeParse(req.query);
+    if (!q.success) return fail(reply, new Error("Okänd hylla"));
+    const conn = haConnection();
+    if (!conn) return fail(reply, new Error("Home Assistant är inte anslutet."));
+    try {
+      return { tiles: await maLibrary(conn, boardSpeakers(), q.data.shelf, q.data.offset ?? 0) };
+    } catch (e) {
+      return fail(reply, e, 502);
+    }
+  });
+
+  /** Speakers playing together (#93): `members` are the other board speakers that join `speaker`; an empty list ends the group. */
+  app.post("/api/music/group", async (req, reply) => {
+    const body = z.object({ speaker: entity, members: z.array(entity).max(16) }).safeParse(req.body);
+    const lead = body.success ? speakerOf(body.data.speaker) : undefined;
+    const members = body.success ? body.data.members.map(speakerOf) : [];
+    if (!body.success || !lead || members.some((m) => !m)) return fail(reply, new Error("Okänd högtalare"));
+    const conn = haConnection();
+    if (!conn) return fail(reply, new Error("Home Assistant är inte anslutet."));
+    try {
+      const states = new Map((await ha.states(conn)).map((s) => [s.entity_id, s]));
+      await maSetGroup(conn, states, loadConfig().entities.speakers ?? [], lead, members as NonNullable<(typeof members)[number]>[]);
+    } catch (e) {
+      return fail(reply, e, 502);
+    }
+    invalidate("ha:states");
+    return { ok: true };
+  });
+
+  app.get("/api/music/search", async (req, reply) => {
+    const q = z.object({ q: z.string().trim().min(2).max(60) }).safeParse(req.query);
+    if (!q.success) return { tiles: [] };
+    const conn = haConnection();
+    if (!conn) return fail(reply, new Error("Home Assistant är inte anslutet."));
+    try {
+      return { tiles: await maSearch(conn, boardSpeakers(), q.data.q) };
+    } catch (e) {
+      return fail(reply, e, 502);
+    }
+  });
+
+  // A playlist or album opened like in Spotify: every track.
+  app.get("/api/music/items", async (req, reply) => {
+    const q = z.object({ uri: z.string().max(300).regex(/^[a-z0-9_-]+:\/\/\S+$/i) }).safeParse(req.query);
+    if (!q.success) return fail(reply, new Error("Okänd spellista"));
+    const conn = haConnection();
+    if (!conn) return fail(reply, new Error("Home Assistant är inte anslutet."));
+    try {
+      return await maTracks(conn, boardSpeakers(), q.data.uri);
+    } catch (e) {
+      return fail(reply, e, 502);
+    }
+  });
+
+  app.post("/api/music/play-media", async (req, reply) => {
+    const body = z
+      .object({ uri: z.string().max(300).regex(/^[a-z0-9_-]+:\/\/\S+$/i), type: z.enum(MEDIA_TYPES), title: label(80).optional(), speaker: entity, start: z.string().max(300).regex(/^[a-z0-9_-]+:\/\/\S+$/i).optional(), shuffle: z.boolean().optional() })
+      .safeParse(req.body);
+    const sp = body.success ? speakerOf(body.data.speaker) : undefined;
+    if (!body.success || !sp) return fail(reply, new Error("Okänd låt eller högtalare"));
+    const conn = haConnection();
+    if (!conn) return fail(reply, new Error("Home Assistant är inte anslutet."));
+    try {
+      await wake(conn, sp.entityId);
+      await maPlayOn(conn, new Map((await ha.states(conn)).map((s) => [s.entity_id, s])), sp, body.data, boardSpeakers());
+    } catch (e) {
+      return fail(reply, new Error(`${sp.name} kunde inte spela ${body.data.title ?? "det"}: ${(e as Error).message}`), 502);
+    }
+    invalidate("ha:states");
+    return { ok: true };
+  });
+
+  // ---------- Säkerhet och Städ ----------
+  const sec = () => loadConfig().entities.security;
+  const inList = <T extends { entityId: string }>(list: T[] | undefined, id: unknown): T | undefined => (typeof id === "string" ? list?.find((x) => x.entityId === id) : undefined);
+  const haCall = async (reply: FastifyReply, name: string, domain: string, service: string, data: Record<string, unknown>) => {
+    const conn = haConnection();
+    if (!conn) return fail(reply, new Error("Home Assistant är inte anslutet."));
+    try {
+      await ha.service(conn, domain, service, data);
+    } catch (e) {
+      return fail(reply, new Error(`${name}: ${(e as Error).message}`), 502);
+    }
+    invalidate("ha:states");
+    return { ok: true };
+  };
+
+  app.get("/api/camera/:id", async (req, reply) => {
+    const cam = inList(sec()?.cameras, (req.params as { id: string }).id);
+    if (!cam) return fail(reply, new Error("Okänd kamera"), 404);
+    const conn = haConnection();
+    if (!conn) return fail(reply, new Error("Home Assistant är inte anslutet."));
+    try {
+      const img = await ha.cameraImage(conn, cam.entityId);
+      return reply.header("cache-control", "no-store").type(img.type.startsWith("image/") ? img.type : "image/jpeg").send(img.body);
+    } catch (e) {
+      return fail(reply, e, 502);
+    }
+  });
+
+  app.post("/api/security/lock", async (req, reply) => {
+    const body = z.object({ entityId: entity, op: z.enum(["lock", "unlock", "open"]), code: z.string().max(20).optional() }).safeParse(req.body);
+    const lock = body.success ? inList(sec()?.locks, body.data.entityId) : undefined;
+    if (!body.success || !lock) return fail(reply, new Error("Okänt lås"));
+    // Unlocking from a wall anyone can touch is off unless the family turned it on.
+    if (body.data.op !== "lock" && !sec()?.allowUnlock) return fail(reply, new Error("Upplåsning från tavlan är avstängd (Inställningar → Säkerhet)."), 403);
+    return haCall(reply, lock.name, "lock", body.data.op, { entity_id: lock.entityId, ...(body.data.code ? { code: body.data.code } : {}) });
+  });
+
+  app.post("/api/security/alarm", async (req, reply) => {
+    const body = z.object({ entityId: entity, mode: z.enum(["home", "away", "night", "vacation", "off"]), code: z.string().max(20).optional() }).safeParse(req.body);
+    const alarm = body.success ? inList(sec()?.alarms, body.data.entityId) : undefined;
+    if (!body.success || !alarm) return fail(reply, new Error("Okänt larm"));
+    const c = alarmCall(body.data.mode);
+    return haCall(reply, alarm.name, c.domain, c.service, { entity_id: alarm.entityId, ...(body.data.code ? { code: body.data.code } : {}) });
+  });
+
+  app.post("/api/security/cover", async (req, reply) => {
+    const body = z.object({ entityId: entity, op: z.enum(["open", "close", "stop"]) }).safeParse(req.body);
+    const cover = body.success ? inList(sec()?.covers, body.data.entityId) : undefined;
+    if (!body.success || !cover) return fail(reply, new Error("Okänd port"));
+    return haCall(reply, cover.name, "cover", `${body.data.op}_cover`, { entity_id: cover.entityId });
+  });
+
+  app.post("/api/robots", async (req, reply) => {
+    const body = z.object({ entityId: entity, op: z.enum(["start", "pause", "dock"]) }).safeParse(req.body);
+    const robot = body.success ? inList(loadConfig().entities.robots, body.data.entityId) : undefined;
+    if (!body.success || !robot) return fail(reply, new Error("Okänd robot"));
+    const conn = haConnection();
+    if (!conn) return fail(reply, new Error("Home Assistant är inte anslutet."));
+    const st = await ha.state(conn, robot.entityId).catch(() => undefined);
+    const c = robotCall(robot.entityId, body.data.op, Number(st?.attributes.supported_features ?? 0));
+    return haCall(reply, robot.name, c.domain, c.service, { entity_id: robot.entityId });
+  });
+
+  // Spotify Connect: play a cover from the library on a device the Spotify account sees (any brand).
+  app.post("/api/music/play-connect", async (req, reply) => {
+    const body = z.object({ uri: z.string().max(300), type: z.enum(MEDIA_TYPES), title: label(80).optional(), device: z.string().min(1).max(80), shuffle: z.boolean().optional() }).safeParse(req.body);
+    const uri = body.success ? spotifyUri(body.data.uri) : undefined;
+    if (!body.success || !uri) return fail(reply, new Error("Bara Spotify kan spelas på en Spotify Connect-enhet"));
+    const conn = haConnection();
+    if (!conn) return fail(reply, new Error("Home Assistant är inte anslutet."));
+    const player = spotifyPlayer(new Map((await ha.states(conn)).map((s) => [s.entity_id, s])));
+    const devices = ((player?.attributes as { source_list?: string[] } | undefined)?.source_list ?? []) as string[];
+    if (!player || !devices.includes(body.data.device)) return fail(reply, new Error(`${body.data.device} syns inte i Spotify just nu – väck den (nätverksstandby) och försök igen.`));
+    try {
+      await ha.service(conn, "media_player", "select_source", { entity_id: player.entity_id, source: body.data.device });
+      if (body.data.shuffle !== undefined) await ha.service(conn, "media_player", "shuffle_set", { entity_id: player.entity_id, shuffle: body.data.shuffle }).catch(() => undefined);
+      const kind = uri.split(":")[1];
+      await ha.service(conn, "media_player", "play_media", { entity_id: player.entity_id, media_content_id: uri, media_content_type: kind });
+    } catch (e) {
+      return fail(reply, new Error(`${body.data.device} kunde inte spela ${body.data.title ?? "det"}: ${(e as Error).message}`), 502);
+    }
+    invalidate("ha:states");
+    return { ok: true };
+  });
+
   // Settings: try a station before adding it (admin only, any http(s) stream, a known speaker).
   app.post("/api/music/try", { preHandler: guard }, async (req, reply) => {
     const body = z.object({ name: label(40), url: z.string().url().max(500).regex(/^https?:\/\//), speaker: entity }).safeParse(req.body);
     if (!body.success || !speakerOf(body.data.speaker)) return fail(reply, new Error("Välj en högtalare först"));
     const conn = haConnection();
     if (!conn) return fail(reply, new Error("Home Assistant är inte anslutet."));
-    const c = playCall(body.data.speaker, { name: body.data.name, url: body.data.url });
     try {
-      await ha.service(conn, c.domain, c.service, c.data);
+      await startStation(conn, body.data.speaker, { name: body.data.name, url: body.data.url });
     } catch (e) {
       return fail(reply, new Error(`${speakerOf(body.data.speaker)!.name} kunde inte spela ${body.data.name}: ${(e as Error).message}`), 502);
     }
@@ -887,16 +1351,132 @@ export async function registerRoutes(app: FastifyInstance) {
     }
   });
 
+  // Laddläge hos en smartstyrning (t.ex. Auto / Ladda nu / Pausa): samma överstyrning som smartstyrningens egen knapp, via Home Assistant.
+  app.post("/api/car/:index/mode", async (req, reply) => {
+    const { option } = (req.body ?? {}) as { option?: string };
+    try {
+      const car = loadConfig().entities.cars[Number((req.params as { index: string }).index)];
+      const conn = haConnection();
+      if (!car || !conn) throw new Error(car ? "Home Assistant är inte anslutet." : "Okänd bil");
+      const states = new Map((await cached("ha:states", 5_000, () => ha.states(conn))).map((s) => [s.entity_id, s]));
+      const sc = findSmartCharging(states, car.name, { plan: car.plan, mode: car.mode });
+      if (!sc?.modeEntity) throw new Error("Bilen har ingen smart laddning med laddläge.");
+      if (!option || !sc.options.includes(option)) throw new Error("Okänt laddläge.");
+      const d = sc.modeEntity.startsWith("input_select.") ? "input_select" : "select";
+      await ha.service(conn, d, "select_option", { entity_id: sc.modeEntity, option });
+      invalidate("ha:states");
+      return { ok: true };
+    } catch (e) {
+      return fail(reply, e);
+    }
+  });
+
+  // Ändra bilens laddschema (klar kl T med mål %, per veckodag). Skrivs som JSON i smartstyrningens kommandofält i Home Assistant; styrningen sparar det som sitt eget schema, så ändringen slår igenom hos den.
+  app.post("/api/car/:index/schedule", async (req, reply) => {
+    const b = (req.body ?? {}) as { day?: number; time?: string; soc?: number; enabled?: boolean };
+    try {
+      const car = loadConfig().entities.cars[Number((req.params as { index: string }).index)];
+      const conn = haConnection();
+      if (!car || !conn) throw new Error(car ? "Home Assistant är inte anslutet." : "Okänd bil");
+      const day = Number(b.day);
+      const soc = Number(b.soc);
+      if (!Number.isInteger(day) || day < 0 || day > 6 || !/^\d{2}:\d{2}$/.test(String(b.time)) || !Number.isFinite(soc) || soc < 20 || soc > 100) throw new Error("Ogiltigt schema.");
+      const states = new Map((await cached("ha:states", 5_000, () => ha.states(conn))).map((s) => [s.entity_id, s]));
+      const sc = findSmartCharging(states, car.name, { plan: car.plan, mode: car.mode });
+      if (!sc?.scheduleEntity || !sc.scheduleCar) throw new Error("Laddschemat går inte att ändra härifrån – smartstyrningen saknar kommandofält.");
+      await ha.service(conn, "input_text", "set_value", { entity_id: sc.scheduleEntity, value: JSON.stringify({ car: sc.scheduleCar, day, time: b.time, soc: Math.round(soc), enabled: Boolean(b.enabled) }) });
+      invalidate("ha:states");
+      return { ok: true };
+    } catch (e) {
+      return fail(reply, e);
+    }
+  });
+
+  // ---------- Car charging: read what HA has, and the board's own plan (a schedule helper + automation in HA) ----------
+  const liveStates = async (conn: NonNullable<ReturnType<typeof haConnection>>) => {
+    const sock = haSocket();
+    const list = sock?.connected ? [...sock.states.values()] : await ha.states(conn);
+    return new Map(list.map((s) => [s.entity_id, s]));
+  };
+  const charging = async (index: number) => {
+    const car = loadConfig().entities.cars[index];
+    const conn = haConnection();
+    if (!car || !conn) throw new Error(car ? "Home Assistant är inte anslutet." : "Okänd bil");
+    const [all, states] = await Promise.all([cached("registry", 30_000, () => readRegistry(conn)), liveStates(conn)]);
+    const dev = all.find((x) => x.e === car.battery)?.d;
+    const carEnts = dev ? all.filter((x) => x.d === dev) : [];
+    return { car, conn, states, info: await readCharging(conn, car, all, carEnts, states) };
+  };
+  const chargeRule = z.object({
+    days: z.array(z.number().int().min(1).max(7)).min(1).max(7),
+    from: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/),
+    to: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/),
+  });
+  const chargePlan = z.object({ rules: z.array(chargeRule).min(1).max(8), target: entity, limit: z.number().int().min(10).max(100).optional() });
+  const carIndex = (req: FastifyRequest) => Number((req.params as { index: string }).index);
+
+  app.get("/api/car/:index/charging", async (req, reply) => {
+    try {
+      return (await charging(carIndex(req))).info;
+    } catch (e) {
+      return fail(reply, e);
+    }
+  });
+
+  app.put("/api/car/:index/charging", async (req, reply) => {
+    const parsed = chargePlan.safeParse(req.body);
+    if (!parsed.success) return fail(reply, new Error("Ogiltigt laddschema"));
+    try {
+      const { car, conn, states, info } = await charging(carIndex(req));
+      const plan = parsed.data;
+      if (!info.targetOptions.some((t) => t.entityId === plan.target)) throw new Error("Hittar inte det som ska styra laddningen.");
+      const limit = plan.limit !== undefined && info.limit ? { entityId: info.limit.entityId, value: plan.limit } : undefined;
+      await saveOwnPlan(conn, car, states, { rules: plan.rules, target: plan.target, limit });
+      invalidate("registry");
+      return { ok: true };
+    } catch (e) {
+      return fail(reply, new Error(`Kunde inte spara laddschemat i Home Assistant: ${(e as Error).message}`));
+    }
+  });
+
+  app.delete("/api/car/:index/charging", async (req, reply) => {
+    try {
+      const { car, conn, states } = await charging(carIndex(req));
+      await deleteOwnPlan(conn, car, states);
+      invalidate("registry");
+      return { ok: true };
+    } catch (e) {
+      return fail(reply, e);
+    }
+  });
+
+  app.post("/api/car/:index/charging/set", async (req, reply) => {
+    const { entityId, op, value } = (req.body ?? {}) as { entityId?: string; op?: "toggle" | "on" | "off" | "press" | "set" | "select" | "time"; value?: string | number };
+    try {
+      const { conn, info } = await charging(carIndex(req));
+      if (!entityId || !chargingEntities(info).has(entityId)) throw new Error("Okänt reglage");
+      await setChargeEntity(conn, entityId, op ?? "toggle", value);
+      invalidate("ha:states");
+      return { ok: true };
+    } catch (e) {
+      return fail(reply, e);
+    }
+  });
+
   // ---------- Generic controls on climate/device cards ----------
   app.post("/api/control", async (req, reply) => {
     const { entityId, op, value } = (req.body ?? {}) as { entityId?: string; op?: "toggle" | "select" | "set" | "press"; value?: string | number };
     const cfg = loadConfig();
     const allowed = new Set([
       ...(cfg.entities.climates ?? []).flatMap((c) => c.controls ?? []),
-      ...(cfg.entities.deviceCards ?? []).flatMap((c) => c.controls),
       ...(cfg.entities.vacuums ?? []).flatMap((v) => v.controls ?? []),
+      ...(cfg.entities.deviceCards ?? []).flatMap((c) => c.controls),
     ]);
     const conn = haConnection();
+    if (conn && entityId && op === "select" && !allowed.has(entityId)) {              // lägesväljare (Auto först) som tavlan hittat själv
+      const st = new Map((await cached("ha:states", 5_000, () => ha.states(conn))).map((s) => [s.entity_id, s]));
+      if (findAutoModes(st).some((m) => m.entityId === entityId)) allowed.add(entityId);
+    }
     if (!entityId || !allowed.has(entityId)) return fail(reply, new Error("Okänt reglage"));
     if (!conn) return fail(reply, new Error("Home Assistant är inte anslutet."));
     const domain = entityId.split(".")[0];
@@ -979,6 +1559,7 @@ export async function registerRoutes(app: FastifyInstance) {
         return { type: res.headers.get("content-type") ?? "image/png", body: Buffer.from(await res.arrayBuffer()) };
       });
       reply.header("cache-control", "private, max-age=10");
+      if (!/^image\/(png|jpeg|webp|gif)(;|$)/i.test(img.type)) return reply.code(415).send({ error: "Okänt bildformat" });
       reply.type(img.type);
       return reply.send(img.body);
     } catch (e) {
@@ -992,8 +1573,13 @@ export async function registerRoutes(app: FastifyInstance) {
     const conn = haConnection();
     if (!v || !body.success) return fail(reply, new Error("Okänd dammsugare"));
     if (!conn) return fail(reply, new Error("Home Assistant är inte anslutet."));
-    const c = opCall(body.data.op, v.entityId, body.data.value);
     try {
+      const c = opCall(body.data.op, v.entityId, body.data.value);
+      if (body.data.op === "start") {
+        const state = await ha.state(conn, v.entityId);
+        const features = Number(state.attributes.supported_features ?? 0);
+        if (features) c.service = robotCall(v.entityId, "start", features).service;
+      }
       await ha.service(conn, c.domain, c.service, c.data);
     } catch (e) {
       return fail(reply, new Error(`${v.name} kunde inte ${body.data.op}: ${(e as Error).message}`), 502);
@@ -1062,8 +1648,10 @@ export async function registerRoutes(app: FastifyInstance) {
     const group = loadConfig().entities.lightGroups?.[Number(index)];
     const conn = haConnection();
     if (!group || !conn) return fail(reply, new Error(group ? "Home Assistant är inte anslutet." : "Okänd grupp"));
-    if (group.entities.length) {
-      await ha.service(conn, "homeassistant", on ? "turn_on" : "turn_off", { entity_id: group.entities });
+    // At night the quiet lamps (a sleeping child's room) are left out of "Tänd alla"; switching off is always allowed.
+    const entities = on ? allowedToTurnOn(group.entities, loadConfig().entities.quietLights, new Date()) : group.entities;
+    if (entities.length) {
+      await ha.service(conn, "homeassistant", on ? "turn_on" : "turn_off", { entity_id: entities });
     }
     invalidate("ha:states");
     return { ok: true };
@@ -1126,7 +1714,7 @@ export async function registerRoutes(app: FastifyInstance) {
   });
 
   app.post("/api/shopping/add", async (req, reply) => {
-    const { name } = (req.body ?? {}) as { name?: string };
+    const { name, offer } = (req.body ?? {}) as { name?: string; offer?: { store?: string; id?: string } };
     const clean = name?.trim().slice(0, 80);
     if (!clean) return fail(reply, new Error("Skriv en vara."));
     const cfg = loadConfig();
@@ -1137,7 +1725,7 @@ export async function registerRoutes(app: FastifyInstance) {
       invalidate("todo:");
     } else {
       const list = loadLocalList();
-      list.push({ id: Math.random().toString(36).slice(2, 10), name: clean, done: false });
+      list.push({ id: Math.random().toString(36).slice(2, 10), name: clean, done: false, ...(offer?.store && offer.id ? { offer: { store: String(offer.store).slice(0, 40), id: String(offer.id).slice(0, 80) } } : {}) });
       saveLocalList(list);
     }
     return { ok: true };
@@ -1158,6 +1746,30 @@ export async function registerRoutes(app: FastifyInstance) {
     return { ok: true };
   });
 
+  // "Att göra" (#86): add and tick off in the household's todo.* list in Home Assistant.
+  app.post("/api/todo/add", async (req, reply) => {
+    const body = z.object({ name: z.string().trim().min(1).max(120) }).safeParse(req.body);
+    if (!body.success) return fail(reply, new Error("Skriv vad som ska göras."));
+    const id = loadConfig().todo?.entityId;
+    const conn = haConnection();
+    if (!id) return fail(reply, new Error("Ingen Att göra-lista är vald."));
+    if (!conn) return fail(reply, new Error("Home Assistant är inte anslutet."));
+    await ha.service(conn, "todo", "add_item", { entity_id: id, item: body.data.name });
+    invalidate("todo:");
+    return { ok: true };
+  });
+  app.post("/api/todo/toggle", async (req, reply) => {
+    const body = z.object({ id: z.string().min(1).max(200), done: z.boolean() }).safeParse(req.body);
+    if (!body.success) return fail(reply, new Error("Saknar uppgift"));
+    const id = loadConfig().todo?.entityId;
+    const conn = haConnection();
+    if (!id) return fail(reply, new Error("Ingen Att göra-lista är vald."));
+    if (!conn) return fail(reply, new Error("Home Assistant är inte anslutet."));
+    await ha.service(conn, "todo", "update_item", { entity_id: id, item: body.data.id, status: body.data.done ? "completed" : "needs_action" });
+    invalidate("todo:");
+    return { ok: true };
+  });
+
   // Veckans mat: tonight's (or any day's) dinner, from the board.
   app.post("/api/dinner", async (req, reply) => {
     const body = z.object({ day: z.string().regex(/^\d{4}-\d{2}-\d{2}$/), text: z.string().max(80), shopping: z.string().max(200).optional() }).safeParse(req.body);
@@ -1172,6 +1784,34 @@ export async function registerRoutes(app: FastifyInstance) {
     if (!body.success || !loadConfig().people.some((p) => p.id === body.data.personId && p.care)) return fail(reply, new Error("Okänt barn"));
     saveShelf(body.data.personId, body.data.items);
     return { ok: true };
+  });
+
+  // ---------- Sysslor: bocka av på tavlan (alla), ändra listan (PIN) ----------
+  app.post("/api/chores/toggle", async (req, reply) => {
+    const body = z.object({ id: z.string().max(40), done: z.boolean() }).safeParse(req.body);
+    if (!body.success) return fail(reply, new Error("Ogiltigt"));
+    if (!setChoreDone(body.data.id, dayKey(new Date()), body.data.done)) return fail(reply, new Error("Okänd syssla"));
+    invalidate("ha:states");
+    return { ok: true };
+  });
+  app.get("/api/chores", async () => ({ chores: loadChores() }));
+  app.put("/api/chores", { preHandler: guard }, async (req, reply) => {
+    const body = z.object({ chores: z.array(z.object({ id: z.string().regex(ID), personId: z.string().regex(ID), title: z.string().min(1).max(40), days: z.array(z.number().int().min(1).max(7)).max(7) })).max(80) }).safeParse(req.body);
+    if (!body.success) return fail(reply, new Error("Ogiltig lista"));
+    const kids = new Set(loadConfig().people.filter((p) => p.kind === "child").map((p) => p.id));
+    if (body.data.chores.some((c) => !kids.has(c.personId))) return fail(reply, new Error("Sysslor kan bara läggas på barn."));
+    saveChores(body.data.chores);
+    return { ok: true };
+  });
+
+  // ---------- Julkortet (Nordpol): snällistan. Öppen på tavlan som sysslorna; föräldraläget ligger i kortet ----------
+  app.get("/api/jul/nice", async () => ({ items: loadJulNice() }));
+  app.post("/api/jul/nice", async (req, reply) => {
+    const body = z.object({ service: z.enum(JUL_NICE_SERVICES as unknown as [string, ...string[]]), data: z.record(z.unknown()) }).safeParse(req.body);
+    if (!body.success) return fail(reply, new Error("Ogiltigt"));
+    const r = applyJulNice(body.data.service as (typeof JUL_NICE_SERVICES)[number], body.data.data);
+    if ("error" in r) return fail(reply, new Error(r.error));
+    return r;
   });
 
   // ---------- Backup ----------
@@ -1220,6 +1860,16 @@ export async function registerRoutes(app: FastifyInstance) {
     return { ok: true };
   });
 
+  // Lov: school, förskola and pick-up/drop-off go for the days chosen (activities stay).
+  app.post("/api/leave", async (req, reply) => {
+    const day = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
+    const body = z.object({ personId: z.string().regex(ID), from: day, to: day, on: z.boolean() }).safeParse(req.body);
+    const child = body.success ? loadConfig().people.find((p) => p.id === body.data.personId && p.kind === "child") : undefined;
+    if (!body.success || !child) return fail(reply, new Error("Okänt barn"));
+    setLeave(child.id, body.data.from, body.data.to, body.data.on);
+    return { ok: true };
+  });
+
   // ---------- School news and own events ----------
   app.post("/api/news/seen", async (req, reply) => {
     const body = z.object({ ids: z.array(z.string().min(1).max(80)).min(1).max(50) }).safeParse(req.body);
@@ -1231,7 +1881,8 @@ export async function registerRoutes(app: FastifyInstance) {
   // An attachment of a news item, fetched with the integration's own login. Only addresses that
   // were in the latest news are allowed, so the board cannot be used to fetch anything else.
   app.get("/api/school/file", async (req, reply) => {
-    const u = String((req.query as { u?: string }).u ?? "");
+    const q = req.query as { u?: string; dl?: string; n?: string; view?: string; as?: string };
+    const u = String(q.u ?? "");
     const integId = newsFiles.get(u);
     const integ = integId ? loadConfig().integrations.find((i) => i.id === integId) : undefined;
     if (!integ || integ.provider !== "vklass") return reply.code(404).send({ error: "Hittades inte" });
@@ -1244,8 +1895,23 @@ export async function registerRoutes(app: FastifyInstance) {
       if (buf.length > 20 * 1024 * 1024) throw new Error("Filen är för stor");
       const type = res.headers.get("content-type") ?? "application/octet-stream";
       reply.header("cache-control", "private, max-age=3600");
+      const name = safeFileName(q.n, "bilaga");
+      // A Word file as a PDF (to read in the PDF viewer or to download): made with the image's own browser.
+      if (q.as === "pdf" && isDocx(name, type)) {
+        const pdf = await docxToPdf(buf);
+        reply.header("content-disposition", q.dl ? downloadHeader(name.replace(/\.docx$/i, ".pdf")) : "inline");
+        reply.type("application/pdf");
+        return reply.send(pdf);
+      }
+      // A Word file read on the board: converted to a plain page (shown in a frame without scripts).
+      if (q.view === "html" && isDocx(name, type)) {
+        reply.header("content-security-policy", "sandbox; default-src 'none'; img-src data:; style-src 'unsafe-inline'");
+        reply.type("text/html; charset=utf-8");
+        return reply.send(await docxToHtml(buf));
+      }
       const disp = res.headers.get("content-disposition");
-      if (disp) reply.header("content-disposition", disp.replace(/^attachment/i, "inline"));
+      if (q.dl) reply.header("content-disposition", downloadHeader(name));
+      else if (disp) reply.header("content-disposition", disp.replace(/^attachment/i, "inline"));
       reply.type(type);
       return reply.send(buf);
     } catch (e) {
@@ -1260,13 +1926,33 @@ export async function registerRoutes(app: FastifyInstance) {
     end: z.string().regex(/^\d{2}:\d{2}$/).optional(),
     title: z.string().trim().min(1).max(80),
     personId: z.string().regex(ID).optional(),
+    personIds: z.array(z.string().regex(ID)).max(20).optional(),
     note: z.string().max(500).optional(),
   });
+  // "Utgår": hide one occurrence on the board (the family's calendar itself is not changed).
+  app.post("/api/events/cancel", async (req, reply) => {
+    const body = z.object({ key: z.string().min(3).max(400), on: z.boolean() }).safeParse(req.body);
+    if (!body.success) return fail(reply, new Error("Okänd händelse"));
+    const today = new Date().toISOString().slice(0, 10);
+    const old = new Date(Date.now() - 30 * 86_400_000).toISOString().slice(0, 10);
+    // Old ones are forgotten after a month so the list never grows.
+    const next = Object.fromEntries(Object.entries(loadLocal().cancelled ?? {}).filter(([, d]) => d >= old));
+    if (body.data.on) next[body.data.key] = today;
+    else delete next[body.data.key];
+    saveLocal({ cancelled: next });
+    invalidate("dashboard");
+    return { ok: true };
+  });
+
   app.post("/api/own-events", async (req, reply) => {
     const body = ownEventSchema.safeParse(req.body);
     if (!body.success) return fail(reply, new Error("Fyll i dag och vad det gäller."));
-    if (body.data.personId && !loadConfig().people.some((p) => p.id === body.data.personId)) return fail(reply, new Error("Okänd person"));
-    return addOwnEvent(body.data);
+    const people = new Set(loadConfig().people.map((p) => p.id));
+    const ids = [...new Set([...(body.data.personId ? [body.data.personId] : []), ...(body.data.personIds ?? [])])];
+    if (ids.some((id) => !people.has(id))) return fail(reply, new Error("Okänd person"));
+    // One person: their own column. Several: Gemensamt with their dots. None: the whole family.
+    const { personId: _p, personIds: _ps, ...rest } = body.data;
+    return addOwnEvent({ ...rest, ...(ids.length === 1 ? { personId: ids[0] } : ids.length > 1 ? { personIds: ids } : {}) });
   });
   app.delete("/api/own-events/:id", async (req) => {
     removeOwnEvent((req.params as { id: string }).id);

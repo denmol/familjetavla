@@ -1,10 +1,17 @@
-import { Fragment } from "react";
+import { Fragment, useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
+import { api } from "../api";
+import { useDesign } from "../uiscale";
+import { WIDGET_LABELS } from "../widgets";
 import type { Dashboard } from "../../../server/src/types";
 import { Fit } from "./Fit";
 import { Icon, type IconName } from "../Icon";
 import { AnimatedNumber, Avatar, EventIcon, eventLabel, TravelBadge, travelText } from "./bits";
 import type { Actions } from "./Dashboard";
+import type { BoxProps } from "../boxprefs";
+import { passesShow, type BoxPref } from "../../../server/src/boxprefs";
 import { widget } from "../widgets";
+import { navigate } from "../route";
 
 const SKY_LABEL: Record<string, string> = { clear: "Klart", partly: "Halvklart", cloudy: "Mulet", rain: "Regn", snow: "Snö", fog: "Dimma" };
 const SKY_ICON: Record<string, IconName> = { clear: "sun", partly: "partly", cloudy: "cloud", rain: "rain", snow: "snow", fog: "cloud" };
@@ -16,10 +23,11 @@ export function renderWidget(id: Dashboard["home"][number]["id"], data: Dashboar
 }
 
 /** The big "Nu" zone: what happens in the next few hours, readable from across the room. */
-function NowZone({ data, actions }: { data: Dashboard; actions: Actions }) {
+function NowZone({ data, actions, edit }: { data: Dashboard; actions: Actions; edit?: EditProps }) {
   const { now, header } = data;
   return (
-    <section className="card strong now area-now" aria-label="Nu">
+    <section className={`card strong now area-now ${edit?.className ?? ""}`} aria-label="Nu" {...edit?.handlers}>
+      {edit?.bar}
       <div style={{ minWidth: 0 }}>
         <span className="eyebrow">Nu</span>
         <div className="now-headline">{now.headline}</div>
@@ -95,12 +103,100 @@ function MoreButton({ n, what, label, onClick }: { n: number; what: string; labe
   );
 }
 
-export function Week({ data, actions, full = false }: { data: Dashboard; actions: Actions; full?: boolean }) {
+type WeekEvent = Dashboard["days"][number]["events"][number];
+interface WeekCol {
+  key: string;
+  name: string;
+  initial: string;
+  color: string;
+  family?: boolean;
+}
+
+/** Whom an event is about: the people it names, none = the whole family. */
+const eventPeople = (e: WeekEvent, known: Set<string>) => (e.whoAll?.length ? e.whoAll : e.who ? [e.who] : []).filter((n) => known.has(n));
+
+/** One column per person who has something this week (or a school day), and "Familjen" first for what is for everyone. */
+export function weekColumns(data: Dashboard): WeekCol[] {
+  const known = new Set(data.people.map((p) => p.name));
+  const used = new Set<string>();
+  let family = false;
+  for (const d of data.days)
+    for (const e of d.events) {
+      const who = eventPeople(e, known);
+      if (who.length === 1) used.add(who[0]!);
+      else family = true; // nobody named, or several: one shared entry instead of the same thing under each person
+    }
+  for (const k of data.school ?? []) if (k.days.some((d) => d.lessons.length)) used.add(k.name);
+  // A child with only school that week still gets a column: when school ends is shown every day.
+  for (const d of data.days) for (const s of d.schoolEnds ?? []) used.add(s.name);
+  const people = data.people.filter((p) => used.has(p.name)).map((p) => ({ key: p.id, name: p.name, initial: p.initial, color: p.color }));
+  return [...(family ? [{ key: "family", name: "Gemensamt", initial: "G", color: "var(--muted)", family: true }] : []), ...people];
+}
+
+/** When the child's school day ends (and whether there is gym), for the week's columns. */
+/**
+ * When the child's school day ends that day: from the day itself (every day, also further on and at the other
+ * home), else from this week's school days (an older server). `mode` is the box setting "När skolan slutar".
+ */
+function schoolEnd(data: Dashboard, name: string, day: Dashboard["days"][number], mode?: BoxPref["schoolEnd"]): { end: string; gym: boolean; home: boolean } | undefined {
+  if (mode === "off") return undefined;
+  const fromDay = day.schoolEnds?.find((s) => s.name === name);
+  if (fromDay) return mode === "home" && !fromDay.home ? undefined : fromDay;
+  const lessons = data.school?.find((k) => k.name === name)?.days.find((d) => d.dayKey === day.key)?.lessons;
+  if (!lessons?.length) return undefined;
+  return { end: lessons[lessons.length - 1]!.end, gym: lessons.some((l) => l.gym), home: true };
+}
+
+export function Week({ data, actions, full = false, edit, box, pref }: { data: Dashboard; actions: Actions; full?: boolean; edit?: EditProps; box?: BoxProps; pref?: BoxPref }) {
+  // The new design never hides a day behind "+N": the week shrinks to fit instead.
+  const flat = useDesign(data.design) === "flat";
+  // Settings for just this box: how many days, whose, and what (homework / activities only).
+  const allCols = weekColumns(data);
+  const known = new Set(data.people.map((p) => p.name));
+  // Further ahead than seven days: the calendar page, week by week (#37).
+  const calButton = (
+    <button className="btn small plan-btn cal-btn" aria-label="Kalender – fler veckor framåt" title="Kalender" onClick={() => actions.openPage("veckan")}>
+      <Icon name="calendar" size={18} />
+      <span className="plan-word">Kalender</span>
+    </button>
+  );
+  // Put something in the calendar by hand, for one or several of the family (the form "Lägg till på tavlan").
+  const addButton = (
+    <button className="btn small plan-btn add-btn" aria-label="Lägg till i kalendern" title="Lägg till i kalendern" onClick={() => navigate("/lagg-till")}>
+      <Icon name="plus" size={18} />
+    </button>
+  );
+  type Day = Dashboard["days"][number];
+  type Col = ReturnType<typeof weekColumns>[number];
+  // Homework, tests and hand-ins from the school are marked in their own colour.
+  const taskOf = (d: Day, c: Col, e: WeekEvent) => (c.family ? undefined : data.school?.find((k) => k.name === c.name)?.tasks.find((t) => t.dayKey === d.key && t.title === e.title));
+  /** What one cell shows: the column's events that day, after the box's "show only …". */
+  const cellEvents = (d: Day, c: Col) => {
+    const evs = d.events.filter((e) => {
+      const who = eventPeople(e, known);
+      return c.family ? who.length !== 1 : who[0] === c.name;
+    });
+    return pref?.show ? evs.filter((e) => passesShow(pref.show, e, Boolean(taskOf(d, c, e)))) : evs;
+  };
+  const chosenDays = pref?.days ? data.days.slice(0, pref.days) : data.days;
+  let cols = pref?.people ? allCols.filter((c) => c.family || pref.people!.includes(c.name)) : allCols;
+  let shownDays = chosenDays;
+  // "Show only …": columns and days with nothing to show give their room to the rest (today always stays).
+  if (pref?.show) {
+    const hit = cols.filter((c) => chosenDays.some((d) => cellEvents(d, c).length));
+    if (hit.length) cols = hit;
+    shownDays = chosenDays.filter((d) => d.isToday || cols.some((c) => cellEvents(d, c).length));
+  }
   return (
-    <section className="card area-week week-swipe">
+    <section className={`card area-week week-swipe ${edit?.className ?? ""} ${box?.className ?? ""}`} style={box?.style} {...edit?.handlers} {...box?.handlers}>
+      {edit?.bar}
+      {box?.gear}
+      {/* New design: top right corner, next to the cog (the top left already holds Planera, by the column names). */}
+      {!full && flat && calButton}
+      {!full && flat && addButton}
       <div className="card-head" style={{ flexWrap: "wrap" }}>
         {/* On its own page the page title already says it – the room goes to the days. */}
-        {full ? <h2 className="sr-only">Kommande 7 dagar</h2> : <h2>Kommande 7 dagar</h2>}
+        {full || flat ? <h2 className="sr-only">Kommande 7 dagar</h2> : <h2>Kommande 7 dagar</h2>}
         {full && <span className="grow" />}
         {/* Always there: it is also where the week's dinners are planned, even with nothing to drive to. */}
         <button
@@ -117,6 +213,8 @@ export function Week({ data, actions, full = false }: { data: Dashboard; actions
             {data.plan.missing ? <span className="plan-count">{data.plan.missing}</span> : null}
           </span>
         </button>
+        {!full && !flat && calButton}
+        {!full && !flat && addButton}
         <div className="legend">
           {data.legend
             .filter((l) => !data.people.some((p) => p.name === l.name))
@@ -128,16 +226,80 @@ export function Week({ data, actions, full = false }: { data: Dashboard; actions
             ))}
         </div>
       </div>
-      <Fit className={full ? "week-full" : "week-body"} deps={[data]} min={0.8} more={full ? undefined : (n) => <MoreButton n={n} what={n === 1 ? "dag" : "dagar"} label="visa hela veckan" onClick={() => actions.openPage("veckan")} />}>
-        {data.days.map((d, di) => (
+      {cols.length > 1 && (
+        <div className={`wk-head ${full ? "" : "compact"}`} style={{ ["--cols" as string]: cols.length }}>
+          {/* A name opens that person's own week: schedule, homework and the rest. */}
+          {cols.map((c) =>
+            c.family ? (
+              <span className="wk-who" key={c.key} title={c.name}>
+                <i className="wk-dot" style={{ background: c.color }} />
+                <b>{c.name}</b>
+              </span>
+            ) : (
+              <button type="button" className="wk-who wk-who-btn" key={c.key} title={`${c.name}s vecka`} aria-label={`Visa ${c.name}s vecka`} onClick={() => navigate(`/person/${c.key}`)}>
+                <i className="wk-dot" style={{ background: c.color }} />
+                <b>{c.name}</b>
+              </button>
+            ),
+          )}
+        </div>
+      )}
+      <Fit className={`${full ? "week-full" : "week-body"} ${cols.length > 1 ? "wk-matrix" : ""}`} deps={[data, pref]} base={box?.base} noShrink={flat} min={flat ? 0.55 : 0.7} more={full || flat ? undefined : (n) => <MoreButton n={n} what={n === 1 ? "dag" : "dagar"} label="visa hela veckan" onClick={() => actions.openPage("veckan")} />}>
+        {cols.length > 1
+          ? shownDays.map((d, di) => (
+              <div key={d.key} className={`day wk-row ${d.isToday ? "today" : ""} ${di < 2 ? "big" : ""}`}>
+                <div className="day-name">
+                  <b>{d.name}</b>
+                  <small>{d.date}</small>
+                </div>
+                <div className="wk-cells" style={{ ["--cols" as string]: cols.length }}>
+                  {cols.map((c) => {
+                    // With "show only …" the school day's end is left out: it is not what was asked for and takes room.
+                    const sch = c.family || pref?.show ? undefined : schoolEnd(data, c.name, d, pref?.schoolEnd);
+                    // Everything is shown: a cell never hides things behind "+N".
+                    const shown = cellEvents(d, c);
+                    return (
+                      <div className="wk-cell" key={c.key} data-who={c.name}>
+                        {sch && (
+                          <span className={`wk-school ${sch.home ? "" : "away"}`} title={sch.home ? "När skoldagen slutar" : "När skoldagen slutar (hos den andra föräldern)"}>
+                            <Icon name="school" size={14} /> slutar {sch.end}
+                            {sch.gym ? " · idrott" : ""}
+                          </span>
+                        )}
+                        {shown.map((e, i) => (
+                          <button className={`wk-evt ${taskOf(d, c, e) ? `wk-task kind-${taskOf(d, c, e)!.kind}` : ""}`} key={i} style={taskOf(d, c, e) ? undefined : { borderLeftColor: e.color }} onClick={() => actions.openEvent({ ...e, dayLabel: d.name.toLowerCase() })} aria-label={eventLabel(e)}>
+                            {e.time && <span className="t">{e.time}</span>}
+                            {taskOf(d, c, e) && <span className="wk-kind">{{ läxa: "Läxa", prov: "Prov", inlämning: "Inlämning", uppgift: "Uppgift" }[taskOf(d, c, e)!.kind]}</span>}
+                            <span className="ti">{e.title}</span>
+                            {flat && <TravelBadge t={e.travel} />}
+                            {c.family && eventPeople(e, known).length > 1 && (
+                              <span className="wk-with" aria-label={eventPeople(e, known).join(", ")}>
+                                {eventPeople(e, known).map((n) => (
+                                  <i key={n} style={{ background: data.people.find((p) => p.name === n)?.color }} title={n} />
+                                ))}
+                              </span>
+                            )}
+                          </button>
+                        ))}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            ))
+          : shownDays.map((d, di) => {
+          // "Show only homework / activities" applies here too (a homework is a school task with the same title that day).
+          const isTask = (e: WeekEvent) => Boolean(data.school?.some((k) => k.tasks.some((t) => t.dayKey === d.key && t.title === e.title)));
+          const dayEvents = pref?.show ? d.events.filter((e) => passesShow(pref.show, e, isTask(e))) : d.events;
+          return (
           <div key={d.key} className={`day ${d.isToday ? "today" : ""} ${di < 2 ? "big" : ""}`}>
             <div className="day-name">
               <b>{d.name}</b>
               <small>{d.date}</small>
             </div>
             <div className="events">
-              {d.events.length === 0 && <span className="empty-day">Inget inplanerat</span>}
-              {d.events.slice(0, full ? undefined : 3).map((e, i) => (
+              {dayEvents.length === 0 && <span className="empty-day">Inget inplanerat</span>}
+              {dayEvents.slice(0, full ? undefined : 3).map((e, i) => (
                 <button className="event" key={i} onClick={() => actions.openEvent({ ...e, dayLabel: d.name.toLowerCase() })} aria-label={eventLabel(e)}>
                   <EventIcon icon={e.icon} color={e.color} size={di < 2 ? 17 : 15} />
                   {e.time && <span className="t">{e.time}</span>}
@@ -146,30 +308,227 @@ export function Week({ data, actions, full = false }: { data: Dashboard; actions
                   {e.who && e.initial && <Avatar initial={e.initial} color={e.color} name={e.who} />}
                 </button>
               ))}
-              {!full && d.events.length > 3 && (
-                <button className="more-chip" aria-label={`${d.events.length - 3} till – visa hela veckan`} onClick={() => actions.openPage("veckan")}>
-                  +{d.events.length - 3}
+              {!full && dayEvents.length > 3 && (
+                <button className="more-chip" aria-label={`${dayEvents.length - 3} till – visa hela veckan`} onClick={() => actions.openPage("veckan")}>
+                  +{dayEvents.length - 3}
                 </button>
               )}
             </div>
           </div>
-        ))}
+          );
+        })}
       </Fit>
     </section>
   );
+}
+
+type HomeId = Dashboard["home"][number]["id"];
+
+/** While arranging, every card is a calm box with its name – everything fits and is easy to move. */
+function ArrangeBox({ title, className = "", edit }: { title: string; className?: string; edit?: EditProps }) {
+  return (
+    <section className={`card arrange-box ${className} ${edit?.className ?? ""}`} {...edit?.handlers}>
+      {edit?.bar}
+      <h2>{title}</h2>
+    </section>
+  );
+}
+interface EditProps {
+  className: string;
+  handlers: React.HTMLAttributes<HTMLElement>;
+  bar: React.ReactNode;
+}
+
+const HOLD_MS = 550;
+
+/**
+ * Hold a card (about half a second) to arrange the home screen: drag it by its handle or move it
+ * with the arrows, or hide it. A normal tap still opens the card. "Klar" saves, "Ångra" goes back.
+ */
+function useArrange(data: Dashboard, actions: Actions) {
+  const [order, setOrder] = useState<{ id: HomeId; on: boolean }[] | null>(null);
+  const [asking, setAsking] = useState<HomeId | null>(null);
+  const [drag, setDrag] = useState<{ id: HomeId; over?: HomeId } | null>(null);
+  const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const start = useRef<{ x: number; y: number } | null>(null);
+  const swallow = useRef(false);
+  const editing = order !== null;
+  useEffect(() => {
+    if (!editing) return;
+    const key = (e: KeyboardEvent) => e.key === "Escape" && setOrder(null);
+    window.addEventListener("keydown", key);
+    return () => window.removeEventListener("keydown", key);
+  }, [editing]);
+
+  const begin = () => {
+    swallow.current = true;
+    navigator.vibrate?.(15);
+    setOrder(data.home.map((w) => ({ id: w.id, on: w.on })));
+  };
+  const cancelHold = () => {
+    clearTimeout(timer.current);
+    start.current = null;
+  };
+  const holdHandlers: React.HTMLAttributes<HTMLElement> = {
+    onPointerDown: (e) => {
+      if (editing || e.button > 0 || (e.target as HTMLElement).closest("input, select, textarea")) return;
+      start.current = { x: e.clientX, y: e.clientY };
+      clearTimeout(timer.current);
+      timer.current = setTimeout(begin, HOLD_MS);
+    },
+    onPointerMove: (e) => {
+      if (start.current && Math.hypot(e.clientX - start.current.x, e.clientY - start.current.y) > 10) cancelHold();
+    },
+    onPointerUp: cancelHold,
+    onPointerCancel: cancelHold,
+    onPointerLeave: cancelHold,
+    // The finger lifts after the long press: that is not a tap on the card or its buttons.
+    onClickCapture: (e) => {
+      if (swallow.current || editing) {
+        swallow.current = false;
+        if (!(e.target as HTMLElement).closest(".edit-bar")) {
+          e.stopPropagation();
+          e.preventDefault();
+        }
+      }
+    },
+    onContextMenu: (e) => e.preventDefault(),
+  };
+
+  const move = (id: HomeId, to: number) =>
+    setOrder((o) => {
+      if (!o) return o;
+      const from = o.findIndex((w) => w.id === id);
+      if (from < 0 || to < 0 || to >= o.length) return o;
+      const next = [...o];
+      const [x] = next.splice(from, 1);
+      next.splice(to, 0, x!);
+      return next;
+    });
+  /** Up/down among the cards that are shown, skipping hidden ones. */
+  const step = (id: HomeId, dir: -1 | 1) => {
+    if (!order) return;
+    const visible = order.filter((w) => w.on && w.id !== "now" && w.id !== "week");
+    const i = visible.findIndex((w) => w.id === id);
+    const other = visible[i + dir];
+    if (other) move(id, order.findIndex((w) => w.id === other.id));
+  };
+  const hide = (id: HomeId) => setOrder((o) => o && o.map((w) => (w.id === id ? { ...w, on: false } : w)));
+  const show = (id: HomeId) => setOrder((o) => o && o.map((w) => (w.id === id ? { ...w, on: true } : w)));
+  const save = () => {
+    const next = order;
+    setOrder(null);
+    if (next) void actions.run("Startsidan", () => api.saveHomeLayout(next));
+  };
+
+  const handle = (id: HomeId): React.HTMLAttributes<HTMLElement> => ({
+    onPointerDown: (e) => {
+      e.stopPropagation();
+      (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+      setDrag({ id });
+    },
+    onPointerMove: (e) => {
+      if (!drag) return;
+      const over = (document.elementFromPoint(e.clientX, e.clientY)?.closest("[data-wid]") as HTMLElement | null)?.dataset.wid as HomeId | undefined;
+      if (over !== drag.over) setDrag({ id: drag.id, over: over && over !== drag.id ? over : undefined });
+    },
+    onPointerUp: () => {
+      if (drag?.over && order) move(drag.id, order.findIndex((w) => w.id === drag.over));
+      setDrag(null);
+    },
+    onPointerCancel: () => setDrag(null),
+  });
+
+  const label = (id: HomeId) => (WIDGET_LABELS[id] ?? id).split(" – ")[0]!;
+  const edit = (id: HomeId, movable: boolean): EditProps => ({
+    className: [editing ? "arranging" : "", drag?.id === id ? "dragging" : "", drag?.over === id ? "drop-here" : ""].join(" "),
+    handlers: holdHandlers,
+    bar: editing ? (
+      <div className="edit-bar no-open" role="toolbar" aria-label={`Ordna ${label(id)}`}>
+        {movable && (
+          <>
+            <button className="btn small drag-handle" aria-label={`Dra ${label(id)}`} {...handle(id)}>
+              ⠿
+            </button>
+            <button className="btn small" aria-label={`Flytta upp ${label(id)}`} onClick={() => step(id, -1)}>
+              ↑
+            </button>
+            <button className="btn small" aria-label={`Flytta ner ${label(id)}`} onClick={() => step(id, 1)}>
+              ↓
+            </button>
+          </>
+        )}
+        <button className="btn small remove" aria-label={`Ta bort ${label(id)} från startsidan`} onClick={() => setAsking(id)}>
+          Ta bort
+        </button>
+      </div>
+    ) : null,
+  });
+
+  const bottom = editing ? (
+    <div className="arrange-bar" role="region" aria-label="Ordna startsidan">
+      <span className="grow">
+        <b>Ordna startsidan</b>
+        <small className="muted"> · dra i ⠿ eller använd pilarna</small>
+      </span>
+      {order!
+        .filter((w) => !w.on)
+        .map((w) => (
+          <button key={w.id} className="btn small ghost" onClick={() => show(w.id)} aria-label={`Visa ${label(w.id)} igen`}>
+            + {label(w.id)}
+          </button>
+        ))}
+      <button className="btn small" onClick={() => setOrder(null)}>
+        Ångra
+      </button>
+      <button className="btn small primary" onClick={save}>
+        Klar
+      </button>
+    </div>
+  ) : null;
+
+  // On top of everything (the tab bar too), like the board's other questions.
+  const question = asking ? createPortal(
+    <div className="overlay" onClick={() => setAsking(null)}>
+      <div className="sheet" role="alertdialog" aria-modal="true" aria-label={`Ta bort ${label(asking)}?`} onClick={(e) => e.stopPropagation()} style={{ maxWidth: 460 }}>
+        <h2 style={{ fontSize: 22 }}>Ta bort {label(asking)} från startsidan?</h2>
+        <p className="muted">Inget raderas. Du kan lägga tillbaka den här (+ {label(asking)}) eller under Inställningar → Startskärm.</p>
+        <div className="row gap" style={{ justifyContent: "flex-end" }}>
+          <button className="btn" onClick={() => setAsking(null)}>
+            Avbryt
+          </button>
+          <button
+            className="btn primary"
+            onClick={() => {
+              hide(asking);
+              setAsking(null);
+            }}
+          >
+            Ta bort
+          </button>
+        </div>
+      </div>
+    </div>,
+    document.body,
+  ) : null;
+
+  return { order, editing, edit, bottom, question, label };
 }
 
 /**
  * The home screen is a bento grid built from the user's chosen widgets, in their order:
  * the "Nu" zone across the top, the week in the wide middle, the rest split between the
  * side columns. Each card is a module in web/src/widgets/; one without data is left out.
+ * Hold a card to move or hide it (see useArrange).
  */
 export function Home({ data, actions }: { data: Dashboard; actions: Actions }) {
-  const chosen = data.home.filter((w) => w.on);
+  const arrange = useArrange(data, actions);
+  const home = arrange.order ? arrange.order.map((w) => ({ ...data.home.find((x) => x.id === w.id), ...w })) : data.home;
+  const chosen = home.filter((w) => w.on);
   const nowOn = chosen.some((w) => w.id === "now");
   const weekOn = chosen.some((w) => w.id === "week");
   // Which cards have something to show, and roughly how tall they are, before splitting into columns.
-  const size = (id: Dashboard["home"][number]["id"]) => widget(id)?.size(data) ?? 0;
+  const size = (id: HomeId) => widget(id)?.size(data) ?? 0;
   // Size per card: chosen in Startskärm, or "auto" – few cards get bigger, many get more compact.
   const withData = chosen.filter((w) => w.id !== "week" && w.id !== "now" && size(w.id) > 0);
   const autoSize = withData.length <= 2 ? "l" : withData.length <= 5 ? "m" : "s";
@@ -189,34 +548,57 @@ export function Home({ data, actions }: { data: Dashboard; actions: Actions }) {
     if (acc >= total * 0.65) break;
   }
   // A tap anywhere on a card (but not on its buttons, boxes and fields) opens its own page or tab.
-  const open = (id: Dashboard["home"][number]["id"]) => {
+  const open = (id: HomeId) => {
     const to = widget(id)?.opens;
     if (to && "page" in to) actions.openPage(to.page);
     else if (to) actions.openTab(to.tab);
   };
-  const rest = shown.map((w) => (
-    <div
-      className={`wsize wsize-${w.sz} opens`}
-      key={w.id}
-      onClick={(e) => {
-        if ((e.target as HTMLElement).closest("button, input, select, textarea, a, label, .no-open")) return;
-        open(w.id);
-      }}
-    >
-      {renderWidget(w.id, data, actions)}
-    </div>
-  ));
+  const rest = shown.map((w) => {
+    const ed = arrange.edit(w.id, true);
+    return (
+      <div
+        className={`wsize wsize-${w.sz} opens ${ed.className}`}
+        key={w.id}
+        data-wid={w.id}
+        {...ed.handlers}
+        onClick={(e) => {
+          if (arrange.editing || (e.target as HTMLElement).closest("button, input, select, textarea, a, label, .no-open")) return;
+          open(w.id);
+        }}
+      >
+        {ed.bar}
+        {arrange.editing ? <ArrangeBox title={arrange.label(w.id)} /> : renderWidget(w.id, data, actions)}
+      </div>
+    );
+  });
   const half = cut;
   return (
-    <main className="home-grid">
-      {nowOn && <NowZone data={data} actions={actions} />}
-      <Fit className="col area-left" deps={[data]} min={0.8} more={(n) => <MoreButton n={n} what="kort" onClick={() => actions.openPage("kort")} />}>
-        {rest.slice(half)}
-      </Fit>
-      {weekOn ? <Week data={data} actions={actions} /> : <div className="area-week" />}
-      <Fit className="col area-side" deps={[data]} min={0.8} more={(n) => <MoreButton n={n} what="kort" onClick={() => actions.openPage("kort")} />}>
-        {rest.slice(0, half)}
-      </Fit>
-    </main>
+    <>
+      {arrange.bottom}
+      <main className={`home-grid ${arrange.editing ? "is-arranging" : ""}`}>
+        {nowOn &&
+          (arrange.editing ? (
+            <ArrangeBox title={arrange.label("now")} className="strong area-now" edit={arrange.edit("now", false)} />
+          ) : (
+            <NowZone data={data} actions={actions} edit={arrange.edit("now", false)} />
+          ))}
+        <Fit className="col area-left" deps={[data, arrange.order]} min={0.7} more={(n) => <MoreButton n={n} what="kort" onClick={() => actions.openPage("kort")} />}>
+          {rest.slice(half)}
+        </Fit>
+        {weekOn ? (
+          arrange.editing ? (
+            <ArrangeBox title={arrange.label("week")} className="area-week" edit={arrange.edit("week", false)} />
+          ) : (
+            <Week data={data} actions={actions} edit={arrange.edit("week", false)} />
+          )
+        ) : (
+          <div className="area-week" />
+        )}
+        <Fit className="col area-side" deps={[data, arrange.order]} min={0.7} more={(n) => <MoreButton n={n} what="kort" onClick={() => actions.openPage("kort")} />}>
+          {rest.slice(0, half)}
+        </Fit>
+      </main>
+      {arrange.question}
+    </>
   );
 }

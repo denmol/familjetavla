@@ -532,6 +532,67 @@ describe("middagsfavoriter, hyllan och veckodagar", () => {
     saveShelf("maja", []);
     expect(buildReminders(tuesdayMorning, [], people, [], null).some((r) => r.title.includes("ta med"))).toBe(false);
   });
+  it("Vklass omsorgstid gäller inte en söndag", async () => {
+    const { buildCareEvents } = await import("./dashboard.js");
+    const leo = { id: "leo", name: "Leo", color: "#f5c84b", kind: "child" as const, care: { days: { "1": "07:30-16:00" } } };
+    const sunday = new Date(2026, 10, 1);
+    const care = buildCareEvents([leo], [{ personId: "leo", text: "07:15 - 16:00" }], [], sunday, 2);
+    expect(care.map((c) => c.start.getDate())).toEqual([2]); // bara måndagen, inte söndagen
+  });
+  it("Skola24: grupperna i en klass är de som heter som klassen – ämnesgrupper och 7A–7C ingår, men aldrig en annan årskurs", async () => {
+    const { groupsOfClass } = await import("./connectors/skola24.js");
+    const g = (n: string) => ({ groupName: n, groupGuid: `guid-${n}` });
+    // Gantofta skola (Helsingborg): klasserna heter 0–9, grupperna 7:1, 7:2, 7A, 7B, 7MAS …
+    const all = ["4:1", "4:2", "4MAB", "7:1", "7:2", "7A", "7B", "7MAS", "70", "789STV", "17:1", "8:1"].map(g);
+    expect(groupsOfClass("7", all).map((x) => x.groupName)).toEqual(["7:1", "7:2", "7A", "7B", "7MAS"]);
+    expect(groupsOfClass("4", all).map((x) => x.groupName)).toEqual(["4:1", "4:2", "4MAB"]);
+    // Heter klasserna 7A och 7B räknas inte 7A som grupp i klass 7.
+    expect(groupsOfClass("7", all, ["7", "7A", "7B"]).map((x) => x.groupName)).toEqual(["7:1", "7:2", "7MAS"]);
+    expect(groupsOfClass("", all)).toEqual([]);
+  });
+  it("sopnotis: kl 19:30 kvällen innan som standard, eget klockslag, och av med tom sträng", async () => {
+    const { dueNotifications } = await import("./notify.js");
+    const a = (waste?: string) => ({ id: "emil", name: "Emil", color: "#fff", kind: "adult" as const, notify: { service: "mobile_app_x", before: 0, evening: false, weekly: false, morning: "", ...(waste !== undefined ? { waste } : {}) } });
+    const at = (h: number, m: number) => new Date(2026, 10, 3, h, m);
+    const msg = (person: ReturnType<typeof a>, h: number, m: number, types = ["Kärl 1", "Kärl 2"]) => dueNotifications([person], [], 0, 0, at(h, m), [], types).map((n) => `${n.title}: ${n.message}`);
+    expect(msg(a(), 19, 30)).toEqual(["Sopor imorgon: Kärl 1, Kärl 2 hämtas imorgon – ställ ut kärlet ikväll"]);
+    expect(msg(a(), 19, 29)).toEqual([]);
+    expect(msg(a("18:00"), 18, 0)).toHaveLength(1);
+    expect(msg(a("18:00"), 19, 30)).toEqual([]);
+    expect(msg(a(""), 19, 30)).toEqual([]);
+    expect(msg(a(), 19, 30, [])).toEqual([]); // inget hämtas imorgon
+  });
+  it("sopor (EDP): en gata utan nummer som ger tio träffar ber om husnummer", async () => {
+    const { wasteEdp } = await import("./providers/waste.js");
+    const orig = globalThis.fetch;
+    const street = Array.from({ length: 10 }, (_, i) => `Malmgatan ${i + 1}, Taberg (${100 + i})`);
+    globalThis.fetch = (async () => new Response(JSON.stringify({ Succeeded: true, Buildings: street }), { headers: { "content-type": "application/json" } })) as typeof fetch;
+    try {
+      const ctx = (address: string) => ({ str: (k: string) => ({ municipality: "june", address }[k] ?? ""), secret: () => undefined, integration: { id: "waste", settings: {} } }) as never;
+      const r = (await wasteEdp.test(ctx("Malmgatan"))) as { message: string; choices: { options: unknown[] } };
+      expect(r.message).toContain("husnummer");
+      expect(r.choices.options).toHaveLength(10);
+      expect(((await wasteEdp.test(ctx("Malmgatan 3"))) as { message: string }).message).not.toContain("husnummer");
+    } finally {
+      globalThis.fetch = orig;
+    }
+  });
+  it("nextWaste: närmaste hämtning per sort, med idag/imorgon/veckodag", async () => {
+    const { nextWaste } = await import("./dashboard.js");
+    const now = new Date(2026, 10, 3, 17, 0); // tisdag 3 nov
+    const at = (d: number, h = 0) => new Date(2026, 10, d, h);
+    const r = nextWaste(
+      [
+        { date: at(18), type: "Kärl 2" },
+        { date: at(4), type: "Kärl 1" },
+        { date: at(2), type: "Kärl 1" }, // förbi
+        { date: at(18), type: "Kärl 1" },
+        { date: at(3, 6), type: "Matavfall" },
+      ],
+      now,
+    );
+    expect(r.map((x) => `${x.type} ${x.label}`)).toEqual(["Matavfall idag", "Kärl 1 imorgon", "Kärl 2 ons 18/11"]);
+  });
 });
 
 describe("InfoMentor via Home Assistant", () => {
@@ -556,6 +617,9 @@ describe("InfoMentor via Home Assistant", () => {
     expect(rememberSchoolDay({}, st("unknown", { date: "2026-10-23" }), today)).toEqual({});
     expect(rememberSchoolDay({}, st("08:30–14:00"), today)).toEqual({});
     expect(rememberSchoolDay({}, undefined, today)).toEqual({});
+    expect(rememberSchoolDay({}, st("08:30–25:00", { date: "2026-10-23" }), today)).toEqual({});
+    expect(rememberSchoolDay({}, st("14:00–08:30", { date: "2026-10-23" }), today)).toEqual({});
+    expect(rememberSchoolDay({}, st("08:30–14:00", { date: "2026-02-31" }), today)).toEqual({});
   });
 
   it("makes the remembered days into school-day events", async () => {
