@@ -1,3 +1,4 @@
+import { createPortal } from "react-dom";
 import { VacuumView } from "./vacuums";
 import { Hide } from "../hide";
 import { useEffect, useState } from "react";
@@ -186,7 +187,9 @@ export function SecurityPage({ data, actions }: { data: Dashboard; actions: Acti
 const KIND_NAME: Record<string, string> = { washer: "Tvättmaskin", dryer: "Torktumlare", dishwasher: "Diskmaskin", oven: "Ugn", other: "Maskin" };
 
 export function HouseholdPage({ data, actions }: { data: Dashboard; actions: Actions }) {
+  const [selectedId, setSelectedId] = useState<string | null>(null);
   const vacuums = data.vacuums ?? [];
+  const selected = vacuums.find((v) => v.entityId === selectedId);
   const robots = (data.robots ?? []).filter((robot) => !vacuums.some((v) => v.entityId === robot.entityId));
   const machines = data.appliances ?? [];
   const quick = <QuickButtons data={data} actions={actions} place="household" />;
@@ -228,11 +231,28 @@ export function HouseholdPage({ data, actions }: { data: Dashboard; actions: Act
           </div>
         </section>
       )}
-      {vacuums.map((v) => (
-        <Hide key={v.entityId} k={v.entityId} label={v.name} data={data} actions={actions} card>
-          <VacuumView v={v} actions={actions} />
-        </Hide>
-      ))}
+      {vacuums.length > 0 && (
+        <section className="card">
+          <h2>Dammsugare</h2>
+          <div className="stack">
+            {vacuums.map((v) => (
+              <Hide key={v.entityId} k={v.entityId} label={v.name} data={data} actions={actions} block>
+                <button className="btn" onClick={() => setSelectedId(v.entityId)} aria-haspopup="dialog">
+                  <Icon name="vacuum" size={20} /> {v.name} · {v.label}
+                </button>
+              </Hide>
+            ))}
+          </div>
+        </section>
+      )}
+      {selected && createPortal(
+        <div className="overlay" style={{ zIndex: 40 }} onClick={() => setSelectedId(null)} onKeyDown={(e) => { if (e.key === "Escape") setSelectedId(null); }}>
+          <div className="sheet" role="dialog" aria-modal="true" aria-label={selected.name} onClick={(e) => e.stopPropagation()}>
+            <button className="btn" autoFocus onClick={() => setSelectedId(null)}>Stäng</button>
+            <VacuumView key={selected.entityId} v={selected} actions={actions} />
+          </div>
+        </div>, document.body
+      )}
       {robots.map((r) => (
         <Hide key={r.entityId} k={r.entityId} label={r.name} data={data} actions={actions} card>
         <section className={`card robot ${r.error ? "error" : ""}`}>

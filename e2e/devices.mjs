@@ -71,6 +71,13 @@ for (const [name0, dev, tablet] of DEVICES) {
     // Measure like a real board: the demo's extra header buttons don't exist there.
     await p.addStyleTag({ content: ".demo-only{display:none!important}" });
     await p.waitForTimeout(1400);
+    if (r === "hushall") {
+      await p.getByRole("button", { name: /^Foppa ·/ }).click();
+      const panel = p.getByRole("dialog", { name: "Foppa" });
+      await panel.locator(".vac-map img").waitFor({ state: "visible" });
+      await panel.getByRole("button", { name: "Stäng" }).click();
+      await panel.waitFor({ state: "hidden" });
+    }
     if (open === "plan") await p.getByRole("button", { name: /Planera/ }).first().click();
     if (open === "event") await p.locator(".now-item, .hf-row").first().click();
     if (open === "edlevo") {
