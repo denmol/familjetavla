@@ -1,8 +1,12 @@
 import { useEffect, useMemo, useState } from "react";
+import { ScaleSheet } from "../dashboard/ScaleSheet";
 import { InstallHelp, quickAddUrl } from "../InstallHelp";
 import { WIDGET_LABELS } from "../widgets";
+import { BUTTON_PLACE_OPTIONS } from "../dashboard/QuickButtons";
 import { CUSTODY_PRESETS, isHome } from "../../../server/src/custody";
+import { inChristmasSeason } from "../../../server/src/christmas";
 import type {
+  ButtonPlace,
   CalendarCategory,
   CalendarProvider,
   CalendarSource,
@@ -17,6 +21,7 @@ import type {
 import { api, type CalendarTest, type Discovery } from "../api";
 import { Icon } from "../Icon";
 import { MusicCard } from "./music";
+import { SecurityCard } from "./security";
 import { EntityPicker, MultiEntityPicker, PALETTE, ProviderForm, ProviderTiles, Result, Select, Text, Toggle, Words, uid } from "./parts";
 import type { StepProps } from "./Wizard";
 
@@ -219,10 +224,16 @@ function CareEditor({ p, adults, onChange }: { p: Person; adults: Person[]; onCh
     setCare({ weeks: weeks.length ? weeks : undefined, anchorDate: weeks.length ? (care.anchorDate ?? mondayKey()) : undefined });
     setWeek(0);
   };
-  const who = (leg?: TravelChoice["to"]) => (leg?.mode?.startsWith("adult:") ? leg.mode : leg?.mode === "ride" ? "ride" : "");
+  const who = (leg?: TravelChoice["to"]) => (leg?.mode?.startsWith("adult:") || leg?.mode === "ride" || leg?.mode === "self" ? leg.mode : "");
   const setWho = (k: "to" | "home", v: string) =>
     setCare({ travel: { ...care.travel, [k]: v ? { mode: v as NonNullable<TravelChoice["to"]>["mode"] } : undefined } });
-  const whoOptions = [{ value: "", label: "Varierar" }, ...adults.map((a) => ({ value: `adult:${a.id}`, label: a.name || "(namnlös)" })), { value: "ride", label: "Någon annan" }];
+  const whoOptions = (k: "to" | "home") => [
+    { value: "", label: "Varierar" },
+    ...adults.map((a) => ({ value: `adult:${a.id}`, label: a.name || "(namnlös)" })),
+    { value: "ride", label: "Någon annan" },
+    // Older kids walk or cycle on their own: nobody has to pick up, and nobody gets a reminder.
+    { value: "self", label: k === "home" ? "Går/cyklar hem själv" : "Går/cyklar dit själv" },
+  ];
   return (
     <div className="care-box stack">
       <div className="row gap" style={{ alignItems: "flex-end" }}>
@@ -296,8 +307,8 @@ function CareEditor({ p, adults, onChange }: { p: Person; adults: Person[]; onCh
         </div>
       </details>
       <div className="grid-2">
-        <Select label="Brukar lämna" value={who(care.travel?.to)} onChange={(v) => setWho("to", v)} options={whoOptions} />
-        <Select label="Brukar hämta" value={who(care.travel?.home)} onChange={(v) => setWho("home", v)} options={whoOptions} />
+        <Select label="Brukar lämna" value={who(care.travel?.to)} onChange={(v) => setWho("to", v)} options={whoOptions("to")} />
+        <Select label="Brukar hämta" value={who(care.travel?.home)} onChange={(v) => setWho("home", v)} options={whoOptions("home")} />
       </div>
       <small className="faint">
         Tavlan visar lämning och hämtning i Nu, varnar en vecka i förväg för stängda dagar och planeringsdagar, och med Vklass används dagens tider därifrån. Vem som lämnar och hämtar kan ändras per dag på tavlan.
@@ -448,6 +459,16 @@ export function FamilyStep({ cfg, set }: StepProps) {
           <Icon name="plus" size={20} /> Barn
         </button>
       </div>
+      {cfg.people.some((p) => p.kind === "child" && p.name.trim()) && (
+        <section className="card">
+          <Toggle
+            label="Sysslor för barnen"
+            help="En ruta på startsidan där barnen bockar av vad de ska göra innan de får sätta sig vid tv:n eller datorn. Du lägger in sysslorna på tavlan efteråt (knappen Lägg till i rutan)."
+            checked={cfg.dashboard.home.some((w) => w.id === "chores" && w.on)}
+            onChange={(on) => set({ ...cfg, dashboard: { ...cfg.dashboard, home: cfg.dashboard.home.map((w) => (w.id === "chores" ? { ...w, on } : w)) } })}
+          />
+        </section>
+      )}
     </div>
   );
 }
@@ -551,6 +572,7 @@ export function DiscoverStep({ cfg, set }: StepProps) {
       r.lightGroups.forEach((_, i) => (p[`lg${i}`] = true));
       r.temps.slice(0, 3).forEach((_, i) => (p[`t${i}`] = true));
       (r.speakers ?? []).slice(0, 4).forEach((_, i) => (p[`sp${i}`] = true));
+      // Säkerhet and Hushåll are tabs the family chooses: found things start unticked.
       (r.vacuums ?? []).slice(0, 4).forEach((_, i) => (p[`vc${i}`] = true));
       p.todo = r.todo.length > 0;
       p.waste = r.calendars.some((c) => c.waste);
@@ -583,12 +605,31 @@ export function DiscoverStep({ cfg, set }: StepProps) {
       if (!(cfg.entities.speakers ?? []).length) next.dashboard.home = next.dashboard.home.map((w) => (w.id === "music" ? { ...w, on: true } : w));
       next.entities.speakers = speakers;
     }
+    if (d.security) {
+      const sec = d.security;
+      const picked = {
+        cameras: sec.cameras.filter((_, i) => on(`cam${i}`)).slice(0, 16),
+        locks: sec.locks.filter((_, i) => on(`lock${i}`)).slice(0, 12),
+        alarms: sec.alarms.filter((_, i) => on(`alarm${i}`)).slice(0, 4),
+        covers: sec.covers.filter((_, i) => on(`cover${i}`)).slice(0, 8),
+        openings: on("openings") ? sec.openings.slice(0, 40) : [],
+      };
+      if (Object.values(picked).some((x) => x.length)) next.entities.security = { ...picked, allowUnlock: cfg.entities.security?.allowUnlock ?? false };
+    }
     const vacuums = (d.vacuums ?? []).filter((_, i) => on(`vc${i}`)).slice(0, 4).map(({ maker: _m, ...v }) => v);
     if (vacuums.length) {
       // A found vacuum turns its card on the home screen on.
       if (!(cfg.entities.vacuums ?? []).length) next.dashboard.home = next.dashboard.home.map((w) => (w.id === "vacuums" ? { ...w, on: true } : w));
-      next.entities.vacuums = vacuums;
+      const saved = cfg.entities.vacuums ?? [];
+      next.entities.vacuums = [...saved, ...vacuums.filter((v) => !saved.some((existing) => existing.entityId === v.entityId))].slice(0, 4);
     }
+    const robots = (d.robots ?? []).filter((_, i) => on(`rob${i}`)).slice(0, 8);
+    if (robots.length) {
+      const saved = cfg.entities.robots ?? [];
+      next.entities.robots = [...saved, ...robots.filter((r) => !saved.some((old) => old.entityId === r.entityId))].slice(0, 8);
+    }
+    const appliances = (d.appliances ?? []).filter((_, i) => on(`app${i}`)).slice(0, 10);
+    if (appliances.length) next.entities.appliances = appliances;
     if (on("todo") && d.todo[0]) next.shopping = { ...next.shopping, source: "ha", entityId: d.todo.find((t) => /shop|inköp|handla/i.test(t.entityId + t.name))?.entityId ?? d.todo[0].entityId };
     const wasteCal = d.calendars.find((c) => c.waste);
     if (on("waste") && wasteCal) {
@@ -705,6 +746,41 @@ export function DiscoverStep({ cfg, set }: StepProps) {
               <h2>Högtalare för musik</h2>
               {d.speakers!.map((x, i) => (
                 <Box key={x.entityId} k={`sp${i}`} label={x.name} sub={x.entityId} />
+              ))}
+            </section>
+          )}
+          {d.security && d.security.cameras.length + d.security.locks.length + d.security.alarms.length + d.security.covers.length + d.security.openings.length > 0 && (
+            <section className="card">
+              <h2>Säkerhet</h2>
+              <p className="muted" style={{ margin: "0 0 8px" }}>
+                Kryssa i det som ska synas under fliken Säkerhet.
+              </p>
+              {d.security.cameras.map((x, i) => (
+                <Box key={x.entityId} k={`cam${i}`} label={`Kamera: ${x.name}`} sub={x.entityId} />
+              ))}
+              {d.security.locks.map((x, i) => (
+                <Box key={x.entityId} k={`lock${i}`} label={`Lås: ${x.name}`} sub={x.entityId} />
+              ))}
+              {d.security.alarms.map((x, i) => (
+                <Box key={x.entityId} k={`alarm${i}`} label={`Larm: ${x.name}`} sub={x.entityId} />
+              ))}
+              {d.security.covers.map((x, i) => (
+                <Box key={x.entityId} k={`cover${i}`} label={`Port: ${x.name}`} sub={x.entityId} />
+              ))}
+              {d.security.openings.length > 0 && <Box k="openings" label={`Dörrar och fönster (${d.security.openings.length} st)`} sub={d.security.openings.slice(0, 5).map((x) => x.name).join(", ")} />}
+            </section>
+          )}
+          {((d.robots ?? []).some((r) => !(d.vacuums ?? []).some((v) => v.entityId === r.entityId)) || Boolean(d.appliances?.length)) && (
+            <section className="card">
+              <h2>Hushåll</h2>
+              <p className="muted" style={{ margin: "0 0 8px" }}>
+                Kryssa i det som ska synas under fliken Hushåll.
+              </p>
+              {(d.appliances ?? []).map((x, i) => (
+                <Box key={`${x.name}${i}`} k={`app${i}`} label={x.name} sub={[x.status, x.power].filter(Boolean).join(" · ")} />
+              ))}
+              {(d.robots ?? []).map((x, i) => !(d.vacuums ?? []).some((v) => v.entityId === x.entityId) && (
+                <Box key={x.entityId} k={`rob${i}`} label={x.name} sub={x.entityId} />
               ))}
             </section>
           )}
@@ -898,12 +974,31 @@ function CalendarEditor({
       )}
       <div className="grid-3">
         <Text label="Namn på tavlan" value={cal.name} onChange={(v) => onChange({ ...cal, name: v })} placeholder={p.category === "sport" ? "Fotboll P14" : "Familjen"} />
-        <Select
-          label="Gäller"
-          value={cal.personId ?? ""}
-          onChange={(v) => onChange({ ...cal, personId: v || undefined })}
-          options={[{ value: "", label: "Hela familjen" }, ...cfg.people.map((x) => ({ value: x.id, label: x.name || "(namnlös)" }))]}
-        />
+        <div className="field">
+          <span className="label">Gäller</span>
+          <div className="chips" role="group" aria-label="Vem kalendern gäller">
+            {(() => {
+              const ids = cal.personIds?.length ? cal.personIds : cal.personId ? [cal.personId] : [];
+              const set = (next: string[]) => onChange({ ...cal, personIds: next.length > 1 ? next : undefined, personId: next.length === 1 ? next[0] : undefined });
+              return (
+                <>
+                  <button type="button" className={`chip ${ids.length === 0 ? "on" : ""}`} aria-pressed={ids.length === 0} onClick={() => set([])}>
+                    Hela familjen
+                  </button>
+                  {cfg.people.map((x) => {
+                    const on = ids.includes(x.id);
+                    return (
+                      <button key={x.id} type="button" className={`chip ${on ? "on" : ""}`} aria-pressed={on} onClick={() => set(on ? ids.filter((i) => i !== x.id) : [...ids, x.id])}>
+                        {x.name || "(namnlös)"}
+                      </button>
+                    );
+                  })}
+                </>
+              );
+            })()}
+          </div>
+          <small className="muted">Välj en eller flera. Delade kalendrar utan val känner också igen namn i rubriken ("Elin tandläkare").</small>
+        </div>
         <Select
           label="Typ"
           value={cal.category}
@@ -913,6 +1008,7 @@ function CalendarEditor({
             { value: "sport", label: "Sport/aktivitet" },
             { value: "school", label: "Skola" },
             { value: "work", label: "Jobb" },
+            { value: "dinner", label: "Middag (veckans meny)" },
             { value: "other", label: "Övrigt" },
           ]}
         />
@@ -1083,7 +1179,7 @@ function useIntegration(cfg: Config, set: (c: Config) => void, category: Integra
   return [integ, put] as const;
 }
 
-export function SchoolStep({ cfg, set, secrets, setSecrets, resp, haOk }: StepProps) {
+export function SchoolStep({ cfg, set, secrets, setSecrets, resp, haOk, saveNow }: StepProps) {
   const schools = cfg.integrations.filter((i) => i.category === "school");
   const children = cfg.people.filter((p) => p.kind === "child");
   const [discovered, setDiscovered] = useState<Record<string, string[]>>({});
@@ -1091,6 +1187,21 @@ export function SchoolStep({ cfg, set, secrets, setSecrets, resp, haOk }: StepPr
   const add = (provider: string) => set({ ...cfg, integrations: [...cfg.integrations, { id: uid("s"), category: "school", provider, settings: {} }] });
   return (
     <div className="stack">
+      {schools.length > 0 && (
+        <section className="card">
+          <h2>Vad tavlan visar</h2>
+          <Select
+            label="Lektioner på sidan Skolan"
+            value={cfg.dashboard.lessons ?? "all"}
+            onChange={(v) => set({ ...cfg, dashboard: { ...cfg.dashboard, lessons: v === "span" ? "span" : "all" } })}
+            options={[
+              { value: "all", label: "Alla lektioner" },
+              { value: "span", label: "Bara när skoldagen slutar" },
+            ]}
+          />
+          <small className="muted">Idrott (gympapåse), läxor, prov och nyheter visas alltid.</small>
+        </section>
+      )}
       {schools.map((integ) => {
         const meta = resp.providers.find((p) => p.id === integ.provider && p.category === "school")!;
         const names = discovered[integ.id] ?? Object.keys(integ.personMap ?? {});
@@ -1117,6 +1228,7 @@ export function SchoolStep({ cfg, set, secrets, setSecrets, resp, haOk }: StepPr
               secrets={secrets}
               setSecrets={setSecrets}
               secretsSet={resp.secretsSet}
+              saveNow={saveNow}
               extra={(r) => {
                 if (r?.discovered && r.discovered.join() !== (discovered[integ.id] ?? []).join()) {
                   const found = r.discovered;
@@ -1250,7 +1362,7 @@ function EdlevoHelp({ hasMenu, hasLink, onMenu, onLink }: { hasMenu: boolean; ha
 /** SRV Återvinning is owned by these five municipalities. */
 const SRV_TOWNS = /botkyrka|haninge|huddinge|nynäshamn|salem/i;
 
-export function WasteStep({ cfg, set, secrets, setSecrets, resp, haOk, postcode }: StepProps) {
+export function WasteStep({ cfg, set, secrets, setSecrets, resp, haOk, postcode, saveNow }: StepProps) {
   const [integ, put] = useIntegration(cfg, set, "waste");
   const meta = integ && resp.providers.find((p) => p.id === integ.provider && p.category === "waste");
   const srvTown = SRV_TOWNS.test(cfg.household.municipality ?? "") && resp.providers.some((p) => p.id === "srv");
@@ -1279,16 +1391,32 @@ export function WasteStep({ cfg, set, secrets, setSecrets, resp, haOk, postcode 
               {cfg.household.municipality} finns inte i listan. Prova <b>Eget schema</b> eller Waste Collection Schedule i Home Assistant.
             </p>
           )}
-          <ProviderForm meta={meta} integ={integ} onChange={put} secrets={secrets} setSecrets={setSecrets} secretsSet={resp.secretsSet} />
+          <ProviderForm key={`${integ.id}-${integ.provider}`} meta={meta} integ={integ} onChange={put} secrets={secrets} setSecrets={setSecrets} secretsSet={resp.secretsSet} saveNow={saveNow} verified={resp.verified.includes(integ.id)} />
         </section>
       )}
     </div>
   );
 }
 
-export function ShoppingStep({ cfg, set, secrets, setSecrets, resp, haOk }: StepProps) {
-  const [integ, put] = useIntegration(cfg, set, "grocery");
+export function ShoppingStep({ cfg, set, secrets, setSecrets, resp, haOk, saveNow }: StepProps) {
+  const stores = cfg.integrations.filter((i) => i.category === "grocery");
+  const [activeId, setActive] = useState<string | null>(stores[0]?.id ?? null);
+  const integ = stores.find((i) => i.id === activeId) ?? stores[0];
   const meta = integ && resp.providers.find((p) => p.id === integ.provider && p.category === "grocery");
+  const put = (i: Integration | null) =>
+    set({ ...cfg, integrations: i ? cfg.integrations.map((x) => (x.id === i.id ? i : x)) : cfg.integrations.filter((x) => x.id !== integ?.id) });
+  const choose = (provider: string) => {
+    // The shop you pick is the one the shopping list goes to (the "Skicka inköpslistan till" list can change that).
+    const have = stores.find((x) => x.provider === provider);
+    if (have) {
+      setActive(have.id);
+      set({ ...cfg, shopping: { ...cfg.shopping, sendTo: have.id } });
+      return;
+    }
+    const id = stores.some((x) => x.id === "grocery") ? `g-${provider}` : "grocery";
+    set({ ...cfg, integrations: [...cfg.integrations, { id, category: "grocery", provider, settings: {} }], shopping: { ...cfg.shopping, sendTo: id } });
+    setActive(id);
+  };
   return (
     <div className="stack">
       <section className="card">
@@ -1311,19 +1439,62 @@ export function ShoppingStep({ cfg, set, secrets, setSecrets, resp, haOk }: Step
           <EntityPicker label="Lista" domains={["todo"]} value={cfg.shopping.entityId} onChange={(v) => set({ ...cfg, shopping: { ...cfg.shopping, entityId: v } })} optional={false} />
         )}
       </section>
-      <h2 style={{ fontSize: 18 }}>Skicka listan till en butik</h2>
-      <ProviderTiles
-        providers={resp.providers}
-        category="grocery"
-        selected={integ?.provider}
-        allowNone="Ingen butik"
-        haAvailable={haOk}
-        onSelect={(id) => put(id ? { id: "grocery", category: "grocery", provider: id, settings: {} } : null)}
-      />
+      <section className="card">
+        <h2>Att göra på startsidan</h2>
+        <p className="muted" style={{ margin: 0 }}>
+          En lista för odaterade saker (boka sotning, byta hallampa). Välj en todo-lista i Home Assistant, till exempel Todoist eller HA:s egen. Uppgifterna syns i en ruta på startsidan, bockas av med ett tryck och kan läggas till där.
+        </p>
+        {haOk ? (
+          <>
+            <EntityPicker label="Lista" domains={["todo"]} value={cfg.todo?.entityId} onChange={(v) => set({ ...cfg, todo: { ...cfg.todo, entityId: v || undefined } })} />
+            {cfg.todo?.entityId && (
+              <label className="field">
+                <span>Rubrik på rutan</span>
+                <input className="input" maxLength={30} placeholder="Att göra" value={cfg.todo?.title ?? ""} onChange={(e) => set({ ...cfg, todo: { ...cfg.todo, title: e.target.value || undefined } })} />
+              </label>
+            )}
+          </>
+        ) : (
+          <p className="muted">Kräver Home Assistant.</p>
+        )}
+      </section>
+      <h2 style={{ fontSize: 18 }}>Butiker</h2>
+      <p className="muted" style={{ margin: 0 }}>Välj en eller flera. Varje butik får egna erbjudanden, vanliga varor och recept under fliken Mat.</p>
+      <div className="tiles">
+        {resp.providers
+          .filter((p) => p.category === "grocery")
+          .map((p) => {
+            const mine = stores.find((x) => x.provider === p.id);
+            const ok = mine && resp.verified.includes(mine.id);
+            return (
+              <button key={p.id} className={`tile ${integ && mine && integ.id === mine.id ? "selected" : ""} ${ok ? "connected" : ""}`} aria-pressed={Boolean(mine)} onClick={() => choose(p.id)}>
+                <b>{p.name}</b>
+                <small>{p.description}</small>
+                <span className="row gap" style={{ flexWrap: "wrap" }}>
+                  {ok ? <span className="badge stable">✓ Inloggad</span> : mine ? <span className="badge">Inte provad</span> : null}
+                  {p.status !== "stable" && <span className={`badge ${p.status}`}>{p.status === "beta" ? "Beta" : "Experimentell"}</span>}
+                </span>
+              </button>
+            );
+          })}
+      </div>
+      {stores.length > 1 && (
+        <section className="card">
+          <Select
+            label="Skicka inköpslistan till"
+            value={cfg.shopping.sendTo && stores.some((x) => x.id === cfg.shopping.sendTo) ? cfg.shopping.sendTo : stores[0]!.id}
+            onChange={(v) => set({ ...cfg, shopping: { ...cfg.shopping, sendTo: v } })}
+            options={stores.map((x) => ({ value: x.id, label: resp.providers.find((p) => p.id === x.provider)?.name ?? x.provider }))}
+          />
+        </section>
+      )}
       {integ && meta && (
         <section className="card">
           <h2>{meta.name}</h2>
-          <ProviderForm meta={meta} integ={integ} onChange={put} secrets={secrets} setSecrets={setSecrets} secretsSet={resp.secretsSet} />
+          <ProviderForm key={`${integ.id}-${integ.provider}`} meta={meta} integ={integ} onChange={put} secrets={secrets} setSecrets={setSecrets} secretsSet={resp.secretsSet} saveNow={saveNow} verified={resp.verified.includes(integ.id)} />
+          <button className="btn small" style={{ alignSelf: "flex-start", marginTop: 10 }} onClick={() => { put(null); setActive(null); }}>
+            Ta bort {meta.name}
+          </button>
         </section>
       )}
     </div>
@@ -1349,7 +1520,7 @@ function DecimalField({ label, value, help, onChange }: { label: string; value: 
   );
 }
 
-export function ElectricityStep({ cfg, set, secrets, setSecrets, resp, haOk, postcode }: StepProps) {
+export function ElectricityStep({ cfg, set, secrets, setSecrets, resp, haOk, postcode, saveNow }: StepProps) {
   const [integ, put] = useIntegration(cfg, set, "price");
   const meta = integ && resp.providers.find((p) => p.id === integ.provider && p.category === "price");
   const e = cfg.electricity;
@@ -1370,7 +1541,7 @@ export function ElectricityStep({ cfg, set, secrets, setSecrets, resp, haOk, pos
       {integ && meta && (
         <section className="card">
           <h2>{meta.name}</h2>
-          <ProviderForm meta={meta} integ={integ} onChange={put} secrets={secrets} setSecrets={setSecrets} secretsSet={resp.secretsSet} />
+          <ProviderForm key={`${integ.id}-${integ.provider}`} meta={meta} integ={integ} onChange={put} secrets={secrets} setSecrets={setSecrets} secretsSet={resp.secretsSet} saveNow={saveNow} verified={resp.verified.includes(integ.id)} />
         </section>
       )}
       {integ && (
@@ -1389,6 +1560,16 @@ export function ElectricityStep({ cfg, set, secrets, setSecrets, resp, haOk, pos
             onChange={(v) => setE({ cheapHours: Number(v) })}
             options={[1, 2, 3, 4, 5, 6, 8].map((n) => ({ value: String(n), label: `${n} ${n === 1 ? "timme" : "timmar"} i följd` }))}
             help="Bra för att ladda bilen eller köra disk/tvätt."
+          />
+          <Select
+            label="Elpriset visas"
+            value={e.resolution ?? "hour"}
+            onChange={(v) => setE({ resolution: v === "quarter" ? "quarter" : "hour" })}
+            options={[
+              { value: "hour", label: "Per timme" },
+              { value: "quarter", label: "Per kvart (15 minuter)" },
+            ]}
+            help="Elmarknaden prissätter varje kvart. Per kvart visas kvartspriset, om din prisleverantör har det."
           />
         </section>
       )}
@@ -1469,13 +1650,31 @@ export function HouseStep({ cfg, set, saveNow }: StepProps) {
           <EntityPicker label="Husets förbrukning" domains={["sensor"]} units={POWER} value={en.energy.house} onChange={(v) => setEn({ energy: { ...en.energy, house: v } })} help="Behövs bara om du saknar solel eller elmätare. Annars räknar tavlan själv: solel + köpt − såld." />
           <EntityPicker label="Elnät – sålt (om mätaren har det separat)" domains={["sensor"]} units={POWER} value={en.energy.gridExport} onChange={(v) => setEn({ energy: { ...en.energy, gridExport: v } })} help="T.ex. Tibber Pulse Elproduktion. Visar mätaren köp som plus och sälj som minus behövs den inte." />
           <EntityPicker label="Hembatteri (%)" domains={["sensor"]} units={/^%$/} value={en.energy.battery} onChange={(v) => setEn({ energy: { ...en.energy, battery: v } })} />
+          <EntityPicker
+            label="Hembatteri – effekt"
+            domains={["sensor"]}
+            units={POWER}
+            value={en.energy.batteryPower}
+            onChange={(v) => setEn({ energy: { ...en.energy, batteryPower: v } })}
+            help="Med den räknar tavlan in batteriet i husets förbrukning och visar om det laddar eller laddar ur."
+          />
         </div>
+        {en.energy.batteryPower && (
+          <Toggle
+            label="Batteriets effekt är plus när det laddar"
+            help="T.ex. Sigenergy. Home Assistants energipanel räknar urladdning som plus – stämmer det för ditt batteri ska den vara av."
+            checked={Boolean(en.energy.batteryChargePositive)}
+            onChange={(v) => setEn({ energy: { ...en.energy, batteryChargePositive: v } })}
+          />
+        )}
         <h3 style={{ marginTop: 8 }}>Dagens kWh</h3>
         <p className="muted">Mätarställningar (kWh) – tavlan räknar själv hur mycket som gått sedan midnatt: förbrukning, egen solel, självförsörjning och vad den köpta elen kostat.</p>
         <div className="grid-2">
           <EntityPicker label="Solproduktion totalt (kWh)" domains={["sensor"]} units={ENERGY} value={en.energy.solarEnergy} onChange={(v) => setEn({ energy: { ...en.energy, solarEnergy: v } })} />
           <EntityPicker label="Köpt el, mätarställning (kWh)" domains={["sensor"]} units={ENERGY} value={en.energy.importEnergy} onChange={(v) => setEn({ energy: { ...en.energy, importEnergy: v } })} />
           <EntityPicker label="Såld el, mätarställning (kWh)" domains={["sensor"]} units={ENERGY} value={en.energy.exportEnergy} onChange={(v) => setEn({ energy: { ...en.energy, exportEnergy: v } })} />
+          <EntityPicker label="Laddat i hembatteriet (kWh)" domains={["sensor"]} units={ENERGY} value={en.energy.batteryChargeEnergy} onChange={(v) => setEn({ energy: { ...en.energy, batteryChargeEnergy: v } })} />
+          <EntityPicker label="Urladdat ur hembatteriet (kWh)" domains={["sensor"]} units={ENERGY} value={en.energy.batteryDischargeEnergy} onChange={(v) => setEn({ energy: { ...en.energy, batteryDischargeEnergy: v } })} />
         </div>
       </section>
       <section className="card">
@@ -1497,7 +1696,6 @@ export function HouseStep({ cfg, set, saveNow }: StepProps) {
           onChange={(v, o) => v && !en.lights.some((l) => l.entityId === v) && setEn({ lights: [...en.lights, { entityId: v, name: o?.name ?? v }] })}
         />
       </section>
-      <MusicCard cfg={cfg} set={set} saveNow={saveNow} />
       <ListCard
         title="Dammsugare"
         help="Robotdammsugare från Home Assistant – Roborock, Dreame, Roomba, Ecovacs och andra märken. Karta, rum och inställningar hittas oftast av sig själva under Hämta från Home Assistant."
@@ -1529,29 +1727,39 @@ export function HouseStep({ cfg, set, saveNow }: StepProps) {
           </div>
         )}
       />
+      <MusicCard cfg={cfg} set={set} saveNow={saveNow} />
+      <SecurityCard cfg={cfg} set={set} />
       <ListCard
         title="Ljusgrupper"
-        help="Visas på fliken Ljus med Tänd alla / Släck alla."
+        help="Bygg egna grupper, t.ex. Fönsterlampor eller Utebelysning. De visas på fliken Ljus med Tänd alla / Släck alla och kan få egna knappar även på startsidan eller en annan flik."
         items={en.lightGroups}
         onChange={(lightGroups) => setEn({ lightGroups })}
         make={() => ({ name: "", entities: [] })}
         addLabel="Lägg till grupp"
         render={(g, s) => (
           <>
-            <Text label="Namn" value={g.name} onChange={(v) => s({ ...g, name: v })} placeholder="Fönsterlampor" />
+            <div className="grid-2">
+              <Text label="Namn" value={g.name} onChange={(v) => s({ ...g, name: v })} placeholder="Fönsterlampor" />
+              <Select
+                label="Tänd/Släck-knappar även på"
+                value={g.place ?? "lights"}
+                onChange={(v) => s({ ...g, place: v === "lights" ? undefined : (v as ButtonPlace) })}
+                options={[{ value: "lights", label: "Bara fliken Ljus" }, ...BUTTON_PLACE_OPTIONS.filter((o) => o.value !== "lights")]}
+              />
+            </div>
             <MultiEntityPicker label="Lägg till lampa" domains={["light", "switch"]} value={g.entities} onChange={(v) => s({ ...g, entities: v })} />
           </>
         )}
       />
       <ListCard
         title="Snabbknappar"
-        help="Scener och skript, t.ex. Godnatt – släck uppe."
+        help="Scener och skript, t.ex. Godnatt – släck uppe eller Dammsugaren hem. Välj var varje knapp ska visas."
         items={en.buttons}
         onChange={(buttons) => setEn({ buttons })}
         make={() => ({ name: "", entityId: "", style: "blue" as const })}
         addLabel="Lägg till knapp"
         render={(b, s) => (
-          <div className="grid-3">
+          <div className="grid-2">
             <Text label="Text på knappen" value={b.name} onChange={(v) => s({ ...b, name: v })} />
             <EntityPicker label="Scen/skript" domains={["scene", "script", "button", "input_button", "automation"]} value={b.entityId || undefined} onChange={(v, o) => s({ ...b, entityId: v ?? "", name: b.name || o?.name || "" })} optional={false} />
             <Select
@@ -1565,6 +1773,7 @@ export function HouseStep({ cfg, set, saveNow }: StepProps) {
                 { value: "plain", label: "Neutral" },
               ]}
             />
+            <Select label="Visas på" value={b.place ?? "lights"} onChange={(v) => s({ ...b, place: v as ButtonPlace })} options={BUTTON_PLACE_OPTIONS} />
           </div>
         )}
       />
@@ -1685,8 +1894,8 @@ function PhotoFrame({ cfg, set }: { cfg: Config; set: (c: Config) => void }) {
   const d = cfg.dashboard;
   return (
     <section className="card">
-      <h2>Fotoram i viloläge</h2>
-      <p className="muted">När ingen rört tavlan på en stund visas familjens bilder med klocka och nästa händelse. Utan bilder visas en lugn himmel.</p>
+      <h2>Fotoram på dagen</h2>
+      <p className="muted">Valfritt: när ingen rört tavlan på en stund visas familjens bilder med klocka och nästa händelse. Utan bilder visas en lugn himmel. Välj "Aldrig" om skärmsläckaren bara ska gå på natten. Vill du stänga av skärmsläckaren på just en skärm gör du det under Skärm-knappen (Aa) på den skärmen.</p>
       <Select
         label="Visa efter"
         value={String(d.idleMinutes ?? 10)}
@@ -1735,7 +1944,7 @@ function PhotoFrame({ cfg, set }: { cfg: Config; set: (c: Config) => void }) {
 
 // ======================= Startskärm =======================
 
-const TAB_LABELS: Record<string, string> = { cars: "Bil", lights: "Ljus", house: "Hus", energy: "Energi", graphs: "Grafer", music: "Musik", vacuums: "Dammsugare" };
+const TAB_LABELS: Record<string, string> = { food: "Mat", security: "Säkerhet", household: "Hushåll", cars: "Bil", lights: "Ljus", house: "Hus", energy: "Energi", graphs: "Grafer", music: "Musik", jul: "Jul" };
 
 const SIZE_OPTIONS = [
   { value: "auto", label: "Auto" },
@@ -1805,8 +2014,30 @@ function OrderList<T extends { id: string; on: boolean; size?: string }>({
 export function DisplayStep({ cfg, set }: StepProps) {
   const d = cfg.dashboard;
   const setD = (patch: Partial<Config["dashboard"]>) => set({ ...cfg, dashboard: { ...d, ...patch } });
+  const [scaleOpen, setScaleOpen] = useState(false);
   return (
     <div className="stack">
+      <section className="card">
+        <h2>Den här skärmen</h2>
+        <p className="muted">Storlek (mindre ger plats åt fler kort utan att bläddra) och om skärmsläckaren ska användas. Gäller bara den här skärmen – surfplattan i hallen och telefonen kan ha olika.</p>
+        <button className="btn" onClick={() => setScaleOpen(true)}>
+          Ändra storlek och skärmsläckare
+        </button>
+        {scaleOpen && <ScaleSheet onClose={() => setScaleOpen(false)} />}
+      </section>
+      <section className="card">
+        <h2>Utseende</h2>
+        <Select
+          label="Design"
+          value={d.design ?? "glass"}
+          onChange={(v) => setD({ design: v === "flat" ? "flat" : "glass" })}
+          options={[
+            { value: "flat", label: "Ny – lugn och platt, tät översikt" },
+            { value: "glass", label: "Klassisk – blå och glasig" },
+          ]}
+          help="Gäller alla skärmar. Varje skärm kan välja sitt eget under knappen Aa. Den nya designen har en fast startsida (Nu, veckan per person, maten och en teknikrad); att ordna om korten gäller bara den klassiska."
+        />
+      </section>
       <section className="card">
         <h2>Startskärmen</h2>
         <p className="muted">
@@ -1814,6 +2045,24 @@ export function DisplayStep({ cfg, set }: StepProps) {
           ni visar få och mer kompakta när ni visar många.
         </p>
         <OrderList items={d.home} labels={WIDGET_LABELS} onChange={(home) => setD({ home })} sizes />
+        <p className="muted" style={{ margin: "8px 0 0" }}>Tips: håll inne en ruta på tavlan för att flytta eller dölja den direkt.</p>
+        <Toggle label="Solbåge vid vädret" help="Soluppgång och solnedgång som en båge under temperaturen i Nu-rutan." checked={Boolean(d.sunArc)} onChange={(v) => setD({ sunArc: v })} />
+      </section>
+      <section className="card">
+        <h2>Julkort</h2>
+        <Select
+          label="Julkortet (Nordpol)"
+          value={d.christmas ?? "auto"}
+          onChange={(v) => setD({ christmas: v === "on" || v === "off" ? v : "auto" })}
+          options={[
+            { value: "auto", label: "Automatiskt – 21 november till 26 december" },
+            { value: "on", label: "Alltid på" },
+            { value: "off", label: "Av" },
+          ]}
+          help={`Nedräkning till jul på startsidan och fliken Jul med tomtekameror, släde, snällista och dagens tomte. Kamerorna är korta filmklipp som hämtas från kortets egen sida (dkanord.github.io) medan fliken Jul är öppen. Du kan stänga av det när du vill. ${
+            d.christmas === "off" ? "Det visas inte." : d.christmas === "on" || inChristmasSeason(new Date()) ? "Det visas just nu." : "Det visas inte just nu och kommer tillbaka 21 november."
+          }`}
+        />
       </section>
       <section className="card">
         <h2>Flikar</h2>
@@ -1830,11 +2079,12 @@ export function DisplayStep({ cfg, set }: StepProps) {
             { value: "dark", label: "Alltid mörkt" },
             { value: "light", label: "Alltid ljust" },
             { value: "eink", label: "E-ink (svart på vitt, inga animationer)" },
+            { value: "mirror", label: "Spegel (vitt på svart, för Magic Mirror bakom glas)" },
           ]}
         />
         <div className="grid-2">
           <label className="field">
-            <span>Nattläge från</span>
+            <span>Skärmsläckare från</span>
             <input type="time" value={d.nightFrom} onChange={(e) => setD({ nightFrom: e.target.value })} />
           </label>
           <label className="field">
@@ -1842,7 +2092,8 @@ export function DisplayStep({ cfg, set }: StepProps) {
             <input type="time" value={d.nightTo} onChange={(e) => setD({ nightTo: e.target.value })} />
           </label>
         </div>
-        <small className="faint">Nattläge visar bara klockan på svart skärm. Tryck för att väcka.</small>
+        <Toggle label="Skärmsläckare på natten" checked={d.nightMode !== false} onChange={(v) => setD({ nightMode: v })} help="Av = skärmen blir aldrig svart på natten." />
+        <small className="faint">Skärmsläckaren visar bara klockan på svart skärm mellan de här tiderna (standard 22:00–06:00). Tryck för att väcka.</small>
       </section>
       <PhotoFrame cfg={cfg} set={set} />
     </div>
@@ -1892,6 +2143,7 @@ function PinCard({ secrets, setSecrets, resp }: Pick<StepProps, "secrets" | "set
 // ======================= Påminnelser =======================
 
 const MORNING_TIMES = ["05:45", "06:00", "06:15", "06:30", "06:45", "07:00", "07:15", "07:30", "07:45", "08:00"];
+const WASTE_TIMES = ["17:00", "17:30", "18:00", "18:30", "19:00", "19:30", "20:00", "20:30", "21:00", "21:30"];
 const BEFORE = [0, 15, 30, 45, 60, 90];
 
 export function NotifyStep({ cfg, set, resp }: StepProps) {
@@ -1959,6 +2211,13 @@ export function NotifyStep({ cfg, set, resp }: StepProps) {
                   onChange={(v) => setNotify(a.id, { morning: v })}
                   options={[{ value: "", label: "Ingen morgonnotis" }, ...MORNING_TIMES.map((t) => ({ value: t, label: `Kl ${t}` }))]}
                 />
+                <Select
+                  label="Sopor – kvällen innan hämtning"
+                  value={n.waste ?? "19:30"}
+                  onChange={(v) => setNotify(a.id, { waste: v })}
+                  options={[{ value: "", label: "Ingen sopnotis" }, ...WASTE_TIMES.map((t) => ({ value: t, label: `Kl ${t}` }))]}
+                  help="En notis dagen innan sopbilen kommer: ställ ut kärlet. Kräver att sophämtning är inställd."
+                />
                 {kidsForNotify.length > 1 && (
                   <div className="field">
                     <span>Notiser om</span>
@@ -1987,6 +2246,15 @@ export function NotifyStep({ cfg, set, resp }: StepProps) {
                 )}
                 <Toggle label="Kvällen innan kl 20 – vad jag ansvarar för imorgon" checked={n.evening ?? true} onChange={(v) => setNotify(a.id, { evening: v })} />
                 <Toggle label="Söndag kl 19 – Planera veckan om något saknar ansvarig" checked={n.weekly ?? true} onChange={(v) => setNotify(a.id, { weekly: v })} />
+                <Toggle label="Ny version av Familjetavlan – en notis när det finns en" checked={n.updates ?? true} onChange={(v) => setNotify(a.id, { updates: v })} />
+                {(cfg.entities.security || (cfg.entities.appliances ?? []).length > 0 || (cfg.entities.robots ?? []).length > 0) && (
+                  <Toggle
+                    label="Hemmet – tvätten klar, roboten har fastnat, dörren olåst kl 22, porten öppen, larmet"
+                    checked={n.home ?? true}
+                    onChange={(v) => setNotify(a.id, { home: v })}
+                    help="Går till den som är hemma (enligt Home Assistants personer), annars till alla. Larmet går alltid till alla."
+                  />
+                )}
               </>
             )}
             <details>

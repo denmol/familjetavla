@@ -1,6 +1,6 @@
 import { fetchIcs } from "../connectors/ics.js";
 import { ha, haConnection } from "../connectors/ha.js";
-import { EDP_PARKED, EDP_PROVIDERS, edpSchedule, edpSearch, srvSchedule, srvSuggest, type Pickup } from "../connectors/waste.js";
+import { EDP_PARKED, EDP_PROVIDERS, edpSchedule, edpSearch, srvSchedule, srvSuggest, sthlmSchedule, type Pickup } from "../connectors/waste.js";
 import { addDays, daysBetween, parseDayKey, shortDate, shortWeekday, startOfDay } from "../time.js";
 import type { ManualPickup } from "../types.js";
 import type { ProviderCtx, WasteProvider } from "./types.js";
@@ -53,11 +53,18 @@ export const wasteEdp: WasteProvider = {
       const address = ctx.str("address");
       if (address.length < 3) throw new Error("Skriv gatuadress och nummer.");
       const found = await edpSearch(url, address);
-      if (!found.length) throw new Error(`Hittade ingen adress som matchar "${address}".`);
+      // No match can also mean the company's search is down (June Avfall, November 2026: every search came back empty while
+      // the schedule for an address already chosen still worked). The search only matches the start of a street name, so there is
+      // no safe test street for every town: say both.
+      if (!found.length) throw new Error(`Hittade ingen adress som börjar med "${address}". Börja med gatunamnet, t.ex. "Storgatan 12". Hittar du ändå inget kan renhållarens sökning vara nere, prova då igen senare. En adress du redan valt fortsätter att ge hämtdagar.`);
+      // The service only answers with its first ten matches: a street without a number then shows 1–9 and not your house.
+      const capped = found.length >= 10 && !/\d/.test(address);
       return {
         ok: true,
-        message: `Hittade ${found.length} adress${found.length === 1 ? "" : "er"} – välj din och testa igen.`,
-        choices: { field: "building", options: found.slice(0, 15).map((b) => ({ value: b, label: b })) },
+        message: capped
+          ? `Renhållaren visar bara de första ${found.length} träffarna. Skriv med husnummer (till exempel "${address} 34") i Gatuadress och tryck Testa igen.`
+          : `Hittade ${found.length} adress${found.length === 1 ? "" : "er"} – välj din och testa igen.`,
+        choices: { field: "building", options: found.slice(0, 40).map((b) => ({ value: b, label: b })) },
       };
     }
     const pickups = await edpSchedule(url, building);
@@ -108,6 +115,33 @@ export const wasteSrv: WasteProvider = {
     if (!building) return [];
     const until = addDays(startOfDay(new Date()), 21);
     return (await srvSchedule(building)).filter((p) => p.date < until);
+  },
+};
+
+export const wasteStockholm: WasteProvider = {
+  meta: {
+    id: "stockholm",
+    category: "waste",
+    name: "Stockholm Vatten och Avfall",
+    description: "Villor och radhus i Stockholms stad – restavfall och matavfall.",
+    status: "experimental",
+    fields: [{ key: "address", label: "Adress", type: "text", placeholder: "Daltorpsvägen 28, Vällingby, 16244", help: "Gata och nummer, ort, postnummer – som på stockholmvattenochavfall.se." }],
+    guide: [
+      "Skriv adressen som \"Gata nr, Ort, postnummer\" och tryck Testa.",
+      "Gäller villor och radhus. Bor ni i flerfamiljshus sköter fastighetsägaren hämtningen.",
+    ],
+  },
+  async test(ctx) {
+    const address = ctx.str("address");
+    if (address.length < 5) throw new Error("Skriv adressen, t.ex. Daltorpsvägen 28, Vällingby, 16244.");
+    const pickups = await sthlmSchedule(address);
+    return { ok: true, message: pickups.length ? "Hämtdagar hittade." : "Adressen hittades men inga kommande hämtningar.", preview: pickups.slice(0, 6).map(fmt) };
+  },
+  async fetch(ctx) {
+    const address = ctx.str("address");
+    if (!address) return [];
+    const until = addDays(startOfDay(new Date()), 21);
+    return (await sthlmSchedule(address)).filter((p) => p.date < until);
   },
 };
 

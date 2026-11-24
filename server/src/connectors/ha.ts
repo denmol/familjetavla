@@ -30,10 +30,10 @@ export function haConnection(override?: { url?: string; token?: string }): HaCon
   return null;
 }
 
-async function call<T>(conn: HaConn, path: string, init: RequestInit = {}): Promise<T> {
+async function call<T>(conn: HaConn, path: string, init: RequestInit & { timeoutMs?: number } = {}): Promise<T> {
   const res = await fetchWithTimeout(`${conn.base}${path}`, {
     ...init,
-    timeoutMs: 10_000,
+    timeoutMs: init.timeoutMs ?? 10_000,
     headers: { authorization: `Bearer ${conn.token}`, "content-type": "application/json" },
   });
   if (res.status === 401) throw new Error("Home Assistant nekade åtkomst – kontrollera token.");
@@ -46,10 +46,17 @@ export const ha = {
   ping: (c: HaConn) => call<{ message: string }>(c, "/"),
   states: (c: HaConn) => call<HaState[]>(c, "/states"),
   services: (c: HaConn) => call<{ domain: string; services: Record<string, unknown> }[]>(c, "/services"),
+  /** A still image from a camera (Home Assistant takes it from the stream when the camera has no snapshot). */
+  async cameraImage(c: HaConn, id: string): Promise<{ type: string; body: Buffer }> {
+    const res = await fetchWithTimeout(`${c.base}/camera_proxy/${encodeURIComponent(id)}`, { timeoutMs: 15_000, headers: { authorization: `Bearer ${c.token}` } });
+    if (!res.ok) throw new Error(`Kameran svarade ${res.status}`);
+    return { type: res.headers.get("content-type") ?? "image/jpeg", body: Buffer.from(await res.arrayBuffer()) };
+  },
   state: (c: HaConn, id: string) => call<HaState>(c, `/states/${encodeURIComponent(id)}`),
-  service: (c: HaConn, domain: string, service: string, data: Record<string, unknown>, returnResponse = false) =>
+  service: (c: HaConn, domain: string, service: string, data: Record<string, unknown>, returnResponse = false, timeoutMs?: number) =>
     call<unknown>(c, `/services/${domain}/${service}${returnResponse ? "?return_response" : ""}`, {
       method: "POST",
+      timeoutMs,
       body: JSON.stringify(data),
     }),
 
@@ -125,9 +132,15 @@ export const ha = {
     return out;
   },
 
-  async todoItems(c: HaConn, entityId: string): Promise<{ uid: string; summary: string; status: string }[]> {
+  /** Automations in automations.yaml – the same API HA's own editor uses. Needs an admin token. */
+  automationConfig: (c: HaConn, id: string) => call<unknown>(c, `/config/automation/config/${encodeURIComponent(id)}`),
+  saveAutomation: (c: HaConn, id: string, config: unknown) =>
+    call<unknown>(c, `/config/automation/config/${encodeURIComponent(id)}`, { method: "POST", body: JSON.stringify(config) }),
+  deleteAutomation: (c: HaConn, id: string) => call<unknown>(c, `/config/automation/config/${encodeURIComponent(id)}`, { method: "DELETE" }),
+
+  async todoItems(c: HaConn, entityId: string): Promise<{ uid: string; summary: string; status: string; due?: string }[]> {
     const res = (await ha.service(c, "todo", "get_items", { entity_id: entityId }, true)) as {
-      service_response?: Record<string, { items: { uid: string; summary: string; status: string }[] }>;
+      service_response?: Record<string, { items: { uid: string; summary: string; status: string; due?: string }[] }>;
     };
     return res.service_response?.[entityId]?.items ?? [];
   },

@@ -1,8 +1,9 @@
 // Demo mode (VITE_DEMO=1): the whole app runs in the browser on recorded sample data.
 // Every button works against this in-memory copy; nothing leaves the page.
-import type { Config, ConfigResponse, DashEvent, Dashboard, Integration, PlanItem, Schedule, TestResult, TravelChoice, TravelLeg } from "../../../server/src/types";
-import type { CalendarTest, CarDetails, Discovery, EntityOption, GraphData, GroceryLine, PostcodeInfo } from "../api";
+import type { CarCharging, ChargeRule, Config, ConfigResponse, Control, DashEvent, Dashboard, Integration, PlanItem, Schedule, TestResult, TravelChoice, TravelLeg } from "../../../server/src/types";
+import type { CalendarTest, CarDetails, ControlOp, Discovery, EntityOption, GraphData, GroceryLine, PostcodeInfo, Shelf, Tile } from "../api";
 import fixtures from "./fixtures.json";
+import pkg from "../../package.json";
 
 const fx = structuredClone(fixtures) as unknown as {
   config: ConfigResponse;
@@ -13,6 +14,53 @@ const fx = structuredClone(fixtures) as unknown as {
   entities: EntityOption[];
   calendarTest: CalendarTest;
 };
+
+// Charging per car: Tesla already has a plan made from the board, the Leaf charges via an Easee box.
+const ctl = (entityId: string, name: string, state: string, extra: Partial<Control> = {}): Control => ({
+  entityId,
+  name,
+  domain: entityId.split(".")[0],
+  state,
+  on: state === "on",
+  offline: false,
+  ...extra,
+});
+const nextAt = (h: number) => {
+  const t = new Date();
+  t.setHours(h, 0, 0, 0);
+  // Next weekday (the demo plans are Mon–Fri).
+  while (t < new Date() || t.getDay() === 0 || t.getDay() === 6) t.setDate(t.getDate() + 1);
+  return t.toISOString();
+};
+const chargePlans: CarCharging[] = [
+  {
+    target: ctl("switch.car0_charger", "Laddning", "off"),
+    targetOptions: [{ entityId: "switch.car0_charger", name: "Tesla Model Y Laddning" }],
+    limit: ctl("number.tesla_charge_limit", "Laddgräns", "80", { min: 50, max: 100, step: 5, unit: "%" }),
+    settings: [],
+    existing: [],
+    own: {
+      scheduleEntity: "schedule.familjetavla_laddning_tesla_model_y",
+      automationEntity: "automation.familjetavla_ladda_tesla_model_y",
+      enabled: true,
+      active: false,
+      rules: [{ days: [1, 2, 3, 4, 5], from: "22:00", to: "06:00" }],
+      target: "switch.car0_charger",
+      limit: 80,
+      next: nextAt(22),
+      missingAutomation: false,
+    },
+    canCreate: true,
+  },
+  {
+    target: ctl("switch.easee_home_charger_enabled", "Easee Laddning", "off"),
+    targetOptions: [{ entityId: "switch.easee_home_charger_enabled", name: "Easee Home Laddning" }],
+    settings: [ctl("select.ev_smart_charging_charge_completion_time", "Klar till", "07:00", { options: ["06:00", "07:00", "08:00"] })],
+    existing: [{ entityId: "automation.ladda_leaf_billigast", name: "Ladda Leaf på billigaste timmarna", domain: "automation", on: true }],
+    canCreate: true,
+  },
+];
+
 
 // "#forsta" opens the demo as a brand-new install: empty settings, the wizard from step one.
 const firstRun = typeof location !== "undefined" && location.hash === "#forsta";
@@ -32,14 +80,34 @@ if (firstRun) {
     entities: { cars: [], energy: {}, lights: [], temps: [], lightGroups: [], buttons: [], climates: [], deviceCards: [], graphs: [] },
   };
   fx.config.secretsSet = [];
+  fx.config.verified = [];
   history.replaceState(null, "", location.pathname);
 }
 
 const wait = <T>(v: T, ms = 180) => new Promise<T>((r) => setTimeout(() => r(structuredClone(v)), ms));
 const d = fx.dashboard;
+let demoNice: { uid: string; summary: string; status: "needs_action" | "completed"; description?: string }[] = [
+  { uid: "n1", summary: "Maja", status: "needs_action", description: '{"emoji":"🧒","score":85,"start":75}' },
+  { uid: "n2", summary: "Ola", status: "needs_action", description: '{"emoji":"🦊","score":70,"start":75}' },
+];
+// Show the Hemmet card in the demo (the fixtures predate it).
+for (const home of [d.home, fx.config.config.dashboard.home]) if (!home.some((w) => w.id === "homestatus")) home.splice(home.findIndex((w) => w.id === "lights") + 1, 0, { id: "homestatus", on: true });
 // "?tema=eink" shows the demo as on an e-ink screen.
 const forcedTheme = typeof location !== "undefined" ? new URLSearchParams(location.search).get("tema") : null;
+// Calendar events in the demo can be struck ("Utgår") like real ones.
+for (const [di, day] of (d.days ?? []).entries()) for (const [ei, ev] of day.events.entries()) if (!ev.ownId && !ev.cancelKey) ev.cancelKey = `demo:${di}:${ei}`;
+// ?lektioner=tider shows Skolan with only when the school day starts and ends.
+if (typeof location !== "undefined" && new URLSearchParams(location.search).get("lektioner") === "tider") d.lessonView = "span";
+// ?design=flat shows the demo in the new flat design (the device check uses it); the demo has sample waste pickups too.
+d.design = typeof location !== "undefined" && new URLSearchParams(location.search).get("design") === "flat" ? "flat" : "glass";
+d.waste ??= [
+  { type: "Kärl 1", dayKey: d.days?.[1]?.key ?? "", label: "imorgon" },
+  { type: "Kärl 2", dayKey: d.days?.[5]?.key ?? "", label: "tor 12/11" },
+];
+// ?utan-ma shows the Musik tab of a home without Music Assistant (the device check uses it).
+if (typeof location !== "undefined" && new URLSearchParams(location.search).has("utan-ma") && d.music) d.music.assistant = false;
 if (forcedTheme === "eink" || forcedTheme === "light" || forcedTheme === "dark") d.theme = forcedTheme;
+if (forcedTheme === "spegel") d.theme = "mirror";
 
 // ---- Förskola days for Maja in the demo: Emil drops off, Anna picks up – except Thursday, where
 // no one has said they pick up yet (shows the amber "saknar ansvarig" in Planera veckan). ----
@@ -121,6 +189,7 @@ const careSaved: Record<string, TravelChoice> = {};
     { name: "Köttfärssås och spagetti" },
   ];
   dd.shelf = [{ personId: "maja", name: "Maja", items: ["Extrakläder"] }];
+  dd.chores = [{ personId: "maja", name: "Maja", color: "#f59e0b", items: [{ id: "c1", title: "Plocka undan", done: true }, { id: "c2", title: "Borsta tänderna", done: false }, { id: "c3", title: "Packa väskan", done: false }], allDone: false }];
   dd.reminders.splice(3, 0, { icon: "bag", title: "Maja · ta med till förskolan: extrakläder", sub: "Bocka av när det är lämnat – tryck på lämningen", tone: "amber" });
   const fri = dd.days.find((x) => x.key === "2026-10-23");
   fri?.events.unshift({ time: "", title: "Planeringsdag – förskolan stängd", color: "#34e0a1", who: "Maja", initial: "M", category: "school", icon: "school" });
@@ -240,6 +309,34 @@ fx.cars.forEach((c, i) => {
     ],
   };
 });
+// Smart laddning: planen med batterinivå per block och golvkontrollen (50 % kl 06:00), som EnergyWizard publicerar.
+if (d.cars[0]) {
+  const at = (h: number, m: number) => {
+    const t = new Date();
+    t.setDate(t.getDate() + (t.getHours() >= 6 ? 1 : 0));
+    t.setHours(h, m, 0, 0);
+    return t.toISOString();
+  };
+  d.cars[0].smart = {
+    planEntity: "sensor.tesla_model_y_laddplan",
+    modeEntity: "input_select.tesla_model_y_laddlage",
+    state: "Planerad 00:15",
+    mode: "Auto",
+    options: ["Auto", "Ladda nu", "Pausa"],
+    nowOption: "Ladda nu",
+    pauseOption: "Pausa",
+    autoOption: "Auto",
+    slots: [
+      { start: at(0, 15), end: at(0, 30), kw: 6.4, socStart: 30, socEnd: 32 },
+      { start: at(1, 0), end: at(2, 30), kw: 8, socStart: 32, socEnd: 46 },
+      { start: at(5, 30), end: at(6, 0), kw: 6.4, socStart: 46, socEnd: 50 },
+    ],
+    socAfter: 50,
+    plannedKwh: 16.8,
+    morning: { time: "06:00", soc: 50, min: 50, ok: true },
+    source: "EnergyWizard",
+  };
+}
 // A petrol car (Volvo XC60): fuel gauge instead of battery, no charging – only warm-up, lock and horn.
 d.cars.push({
   name: "Volvo XC60",
@@ -346,7 +443,7 @@ d.vacuums = [
 ];
 
 if (!d.home.some((w) => w.id === "vacuums")) d.home.splice(d.home.findIndex((w) => w.id === "lights") + 1, 0, { id: "vacuums", on: true });
-if (!d.tabs.some((t) => t.id === "vacuums")) d.tabs.push({ id: "vacuums", on: true });
+
 
 // ---- Energy today in the demo (a sunny October day with solar and a grid meter) ----
 if (d.energy) {
@@ -384,7 +481,7 @@ d.schoolNews = [
     seen: true,
   },
 ];
-d.reminders.unshift({ icon: "school", title: "Från skolan: Höstlov på biblioteket", sub: "Ella · läs på Skolan", tone: "blue" });
+d.reminders.unshift({ icon: "school", title: "Från skolan: Höstlov på biblioteket", sub: "Ella · tryck för att läsa", tone: "blue", newsId: "n1" });
 d.reminders = d.reminders.slice(0, 5);
 
 const demoCal = (title: string) => (title.startsWith("F14") ? { id: "ella-sport", name: "Fotboll F14" } : { id: "leo-sim", name: "Simning" });
@@ -497,6 +594,8 @@ const groupState = new Map<string, boolean>([
   ["light.fonster_vardagsrum", true],
 ]);
 recountGroups();
+// The demo is always the latest version.
+d.version = { current: pkg.version, latest: pkg.version };
 
 function syncDayParts() {
   const h = new Date().getHours() + new Date().getMinutes() / 60;
@@ -558,7 +657,9 @@ const providerTest = (i: Integration): TestResult => {
       return { ok: true, preview: ["Tis 20 okt · Matavfall", "Tis 3 nov · Matavfall"] };
     case "willys":
     case "hemkop":
-      return { ok: true, message: `Inloggad hos ${i.provider === "willys" ? "Willys" : "Hemköp"} (demo).` };
+    case "ica":
+    case "citygross":
+      return { ok: true, message: `Inloggad hos ${{ willys: "Willys", hemkop: "Hemköp", ica: "ICA", citygross: "City Gross" }[i.provider]} (demo).` };
     case "spot":
       return { ok: true, preview: [`24 timmar · lägst 0,10 kr · högst 1,35 kr (spot) · ${i.settings.area ?? "SE3"}`] };
     default:
@@ -589,6 +690,8 @@ const DEMO_STATIONS: { id: string; name: string; url: string; group: "sr" | "oth
   })),
 ];
 
+const demoTested = new Set<string>();
+
 export const demoApi = {
   config: () => wait(fx.config),
   saveConfig: (config: Config, _secrets: Record<string, string | null> = {}) => {
@@ -596,8 +699,16 @@ export const demoApi = {
     d.home = config.dashboard.home;
     d.tabs = config.dashboard.tabs;
     d.theme = config.dashboard.theme;
+    // In the demo every kept connection counts as signed in once it has been tested.
+    fx.config.verified = config.integrations.filter((i) => demoTested.has(i.id + i.provider)).map((i) => i.id);
     return wait(fx.config, 300);
   },
+  providerStores: () => wait([{ value: "1", label: "Demobutiken Centrum" }, { value: "2", label: "Demobutiken Norr" }]),
+  foodStores: () => wait([] as never[]),
+  foodPart: () => wait({}),
+  foodChoices: () => wait({ options: [], value: "" }),
+  foodSetStore: () => wait({ ok: true }),
+  foodIcaStrike: () => wait({ ok: true }),
   checkPin: () => wait({ ok: true }),
   authStatus: () => wait({ paired: true, pinRequired: false, supervisor: false }),
   backup: (_password?: string) => wait({ app: "familjetavla", version: "demo", created: new Date().toISOString(), config: fx.config.config, local: {} } as unknown, 200),
@@ -612,6 +723,30 @@ export const demoApi = {
     }
     return wait({ ok: true as const }, 150);
   },
+  choreToggle: (id: string, done: boolean) => {
+    for (const p of d.chores) {
+      const i = p.items.find((x) => x.id === id);
+      if (i) i.done = done;
+      p.allDone = p.items.every((x) => x.done);
+    }
+    return wait({ ok: true as const }, 100);
+  },
+  julNice: () => wait({ items: demoNice }, 80),
+  julService: (service: string, data: Record<string, unknown>) => {
+    if (service === "add_item") demoNice = [...demoNice, { uid: `n${demoNice.length + 1}`, summary: String(data.item ?? ""), status: "needs_action" as const, description: data.description as string | undefined }];
+    else if (service === "remove_item") {
+      const gone = new Set((Array.isArray(data.item) ? data.item : [data.item]).map(String));
+      demoNice = demoNice.filter((i) => !gone.has(i.uid));
+    } else
+      demoNice = demoNice.map((i) =>
+        i.uid === data.item || i.summary === data.item
+          ? { ...i, summary: data.rename != null ? String(data.rename) : i.summary, description: data.description != null ? String(data.description) : i.description, status: (data.status as "needs_action" | "completed" | undefined) ?? i.status }
+          : i,
+      );
+    return wait({ items: demoNice }, 80);
+  },
+  chores: () => wait({ chores: d.chores.flatMap((p) => p.items.map((i) => ({ id: i.id, personId: p.personId, title: i.title, days: [] as number[] }))) }, 100),
+  saveChores: (_c: { id: string; personId: string; title: string; days: number[] }[]) => wait({ ok: true as const }, 100),
   shelf: (personId: string, items: string[]) => {
     d.shelf = items.length ? [{ personId, name: "Maja", items }] : [];
     d.reminders = d.reminders.filter((r) => !r.title.startsWith("Maja · ta med"));
@@ -634,7 +769,11 @@ export const demoApi = {
     return wait(d, 120);
   },
 
-  testProvider: (integration: Integration, _secrets: Record<string, string>) => wait(providerTest(integration), 700),
+  testProvider: (integration: Integration, _secrets: Record<string, string>) => {
+    const r = providerTest(integration);
+    if (r.ok && !r.choices) demoTested.add(integration.id + integration.provider);
+    return wait(r, 700);
+  },
   testHa: (_url?: string, _token?: string) => wait<TestResult>({ ok: true, message: "Ansluten – 40 entiteter (demo)." }, 500),
   entities: (domains: string[]) => wait(fx.entities.filter((e) => !domains.length || domains.includes(e.entityId.split(".")[0]))),
   testCalendar: (body: { include?: string[]; exclude?: string[] }) => {
@@ -673,6 +812,43 @@ export const demoApi = {
     }
     const a = fx.cars[index].actions.find((x) => x.entityId === entityId);
     if (a && a.domain !== "button") a.state = a.domain === "lock" ? (action === "off" ? "unlocked" : "locked") : action === "off" ? "off" : "on";
+    return wait({});
+  },
+  chargePlan: (index: number) => wait(structuredClone(chargePlans[index % chargePlans.length])),
+  saveChargePlan: (index: number, plan: { rules: ChargeRule[]; target: string; limit?: number }) => {
+    const c = chargePlans[index % chargePlans.length];
+    const id = (d.cars[index]?.name ?? "bil").toLowerCase().replace(/[^a-z0-9]+/g, "_");
+    c.own = {
+      scheduleEntity: `schedule.familjetavla_laddning_${id}`,
+      automationEntity: `automation.familjetavla_ladda_${id}`,
+      enabled: true,
+      active: false,
+      rules: plan.rules,
+      target: plan.target,
+      limit: plan.limit,
+      next: nextAt(Number(plan.rules[0].from.slice(0, 2))),
+      missingAutomation: false,
+    };
+    return wait({}, 500);
+  },
+  deleteChargePlan: (index: number) => {
+    delete chargePlans[index % chargePlans.length].own;
+    return wait({});
+  },
+  chargePlanSet: (index: number, entityId: string, op: ControlOp, value?: string | number) => {
+    const c = chargePlans[index % chargePlans.length];
+    const on = (cur: boolean) => (op === "toggle" ? !cur : op !== "off");
+    if (c.own?.automationEntity === entityId) c.own.enabled = on(c.own.enabled);
+    for (const x of c.existing) if (x.entityId === entityId) x.on = on(x.on);
+    for (const x of [c.target, c.limit, ...c.settings]) {
+      if (!x || x.entityId !== entityId) continue;
+      if (op === "set" || op === "select" || op === "time") x.state = op === "time" ? `${value}:00` : String(value);
+      else {
+        x.on = on(x.on);
+        x.state = x.on ? "on" : "off";
+      }
+    }
+    
     return wait({});
   },
   run: (entityId: string, action: "on" | "off" | "press" = "on") => {
@@ -745,6 +921,35 @@ export const demoApi = {
     recountGroups();
     return wait({});
   },
+  saveHomeLayout: (home: { id: string; on: boolean }[]) => {
+    const old = new Map(d.home.map((w) => [w.id, w]));
+    d.home = home.map((w) => ({ ...old.get(w.id as never), id: w.id as never, on: w.on }));
+    fx.config.config.dashboard.home = d.home;
+    return wait({});
+  },
+  cameraUrl: (entityId: string, _t: number) => demoCamera(entityId),
+  lock: (entityId: string, op: "lock" | "unlock" | "open", _code?: string) => {
+    const l = d.security?.locks.find((x) => x.entityId === entityId);
+    if (l) l.state = op === "lock" ? "locked" : "unlocked";
+    return wait({});
+  },
+  alarm: (entityId: string, mode: "home" | "away" | "night" | "vacation" | "off", _code?: string) => {
+    const a = d.security?.alarms.find((x) => x.entityId === entityId);
+    const names = { home: "På – hemma", away: "På – borta", night: "På – natt", vacation: "På – semester", off: "Av" };
+    if (a) Object.assign(a, { state: mode === "off" ? "disarmed" : `armed_${mode}`, armed: mode !== "off", label: names[mode] });
+    return wait({});
+  },
+  cover: (entityId: string, op: "open" | "close" | "stop") => {
+    const c = d.security?.covers.find((x) => x.entityId === entityId);
+    if (c && op !== "stop") Object.assign(c, { state: op === "open" ? "open" : "closed", open: op === "open", label: op === "open" ? "Öppen" : "Stängd" });
+    return wait({});
+  },
+  robot: (entityId: string, op: "start" | "pause" | "dock") => {
+    const r = d.robots?.find((x) => x.entityId === entityId);
+    const mower = r?.kind === "mower";
+    if (r) Object.assign(r, op === "start" ? { state: mower ? "mowing" : "cleaning", label: mower ? "Klipper" : "Städar", busy: true, error: false } : op === "pause" ? { state: "paused", label: "Pausad", busy: false } : { state: "returning", label: "Åker hem", busy: true, error: false });
+    return wait({});
+  },
   lightsOff: () => {
     for (const l of d.lights) l.on = false;
     recountGroups();
@@ -759,6 +964,25 @@ export const demoApi = {
   tryStation: (_name: string, _url: string, _speaker: string) => wait({}),
   musicStations: () => wait({ stations: DEMO_STATIONS }),
   spotify: (_op: "playpause" | "next") => wait({}),
+  musicLibrary: (shelf: Shelf) => wait({ tiles: demoTiles(shelf) }),
+  musicSearch: (q: string) => wait({ tiles: demoTiles("playlists").filter((t) => t.title.toLowerCase().includes(q.toLowerCase())) }),
+  cancelEvent: (key: string, on: boolean) => {
+    if (on) for (const day of d.days ?? []) day.events = day.events.filter((x) => x.cancelKey !== key);
+    return wait({});
+  },
+  musicItems: (uri: string) => {
+    const songs: [string, string][] = [["Mamma Mu", "Barnens favoriter"], ["Idas sommarvisa", "Astrid Lindgren"], ["Här kommer Pippi Långstrump", "Astrid Lindgren"], ["Små grodorna", "Trazan & Banarne"], ["Bä bä vita lamm", "Barnkören"], ["Imse vimse spindel", "Barnkören"], ["Björnen sover", "Barnkören"], ["Lilla snigel", "Barnkören"], ["Fem små apor", "Trazan & Banarne"], ["Vi är vänner", "Barnens favoriter"], ["Sov du lilla videung", "Astrid Lindgren"], ["Gubben Noak", "Barnkören"], ["Huvud, axlar, knä och tå", "Barnkören"], ["Ekorrn satt i granen", "Barnkören"]];
+    return wait({ title: "", tracks: songs.map(([title, artist], i) => ({ uri: `${uri}/track/${i}`, title, artist, image: cover(title, i + 3) })) });
+  },
+  playConnect: (t: Tile, device: string) => {
+    if (d.music?.spotify) Object.assign(d.music.spotify, { playing: true, title: t.title, device });
+    return wait({});
+  },
+  playMedia: (t: Tile, speaker: string, _start?: string) => {
+    const sp = d.music?.speakers.find((x) => x.entityId === speaker);
+    if (sp) Object.assign(sp, { playing: true, station: undefined, title: t.title, playingUrl: undefined });
+    return wait({});
+  },
   playStationId: (id: string, speaker: string) => {
     const sp = d.music?.speakers.find((x) => x.entityId === speaker);
     const st = DEMO_STATIONS.find((x) => x.id === id);
@@ -811,7 +1035,7 @@ export const demoApi = {
         { name: "RIX FM", url: "https://fm01-ice.stream.khz.se/fm01_mp3", country: "SE", quality: "MP3 128 kbit/s" },
       ].filter((x) => x.name.toLowerCase().includes(q.toLowerCase().slice(0, 2))),
     }),
-  addItem: (name: string) => {
+  addItem: (name: string, _offer?: { store: string; id: string }) => {
     d.shopping.items.push({ id: String(Date.now()), name, done: false });
     return wait({});
   },
@@ -866,3 +1090,29 @@ export const demoApi = {
     return wait({ ok: true as const }, 150);
   },
 };
+
+
+/** Made-up covers for the demo's library: a coloured square per playlist, no real artwork. */
+const COVER_COLOURS = ["#1db954", "#e8115b", "#509bf5", "#f59b23", "#8d67ab", "#148a08", "#dc148c", "#0d73ec", "#e1118c", "#777777"];
+function cover(title: string, i: number) {
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><rect width="100" height="100" fill="${COVER_COLOURS[i % COVER_COLOURS.length]}"/><text x="50" y="60" font-family="sans-serif" font-size="30" font-weight="700" fill="#fff" text-anchor="middle">${title.slice(0, 2).toUpperCase()}</text></svg>`;
+  return `data:image/svg+xml,${encodeURIComponent(svg)}`;
+}
+const DEMO_LIBRARY: Record<Shelf, [string, string?][]> = {
+  recent: [["Fredagsmys"], ["Barnens favoriter"], ["Godnattsagor"], ["Melodifestivalen 2026"], ["Lugnt till middagen"], ["Bilresan"], ["Träning"], ["Julmusik"]],
+  playlists: [["Barnens favoriter"], ["Bilresan"], ["Fredagsmys"], ["Godnattsagor"], ["Julmusik"], ["Lugnt till middagen"], ["Melodifestivalen 2026"], ["Morgonpigg"], ["Städa huset"], ["Sommarhits"], ["Träning"], ["Veckans topplista"]],
+  albums: [["Främling", "Carola"], ["Hello Hello", "Laleh"], ["Vapen & ammunition", "Kent"], ["Arrival", "ABBA"], ["Pippi Långstrump", "Astrid Lindgren"], ["Sånger för barn", "Trazan & Banarne"]],
+  podcasts: [["Sommar i P1", "Sveriges Radio"], ["Barnens nyheter", "Sveriges Radio"], ["Spöktimmen", "Sveriges Radio"], ["Godnattpodden", "Sveriges Radio"]],
+  radios: [["P3", "TuneIn"], ["Rix FM", "TuneIn"], ["Mix Megapol", "TuneIn"], ["NRJ Sverige", "TuneIn"]],
+};
+function demoTiles(shelf: Shelf): Tile[] {
+  const type = shelf === "albums" ? "album" : shelf === "podcasts" ? "podcast" : shelf === "radios" ? "radio" : "playlist";
+  return DEMO_LIBRARY[shelf].map(([title, subtitle], i) => ({ uri: `demo://${type}/${i}`, type, title, subtitle, image: cover(title, i) }));
+}
+
+/** Made-up camera pictures for the demo: a sky, a lawn and a house outline – no real camera. */
+function demoCamera(entityId: string) {
+  const hue = entityId.length * 37 % 360;
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 180"><defs><linearGradient id="s" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="hsl(${hue},45%,70%)"/><stop offset="1" stop-color="hsl(${hue},35%,88%)"/></linearGradient></defs><rect width="320" height="180" fill="url(#s)"/><rect y="120" width="320" height="60" fill="#5c8a4a"/><path d="M110 120V80l50-35 50 35v40z" fill="#c9b79c"/><rect x="148" y="92" width="24" height="28" fill="#6b4f3a"/><text x="8" y="16" font-family="monospace" font-size="11" fill="#fff">${new Date().toLocaleTimeString("sv-SE")}</text></svg>`;
+  return `data:image/svg+xml,${encodeURIComponent(svg)}`;
+}

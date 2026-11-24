@@ -199,12 +199,12 @@ export function MusicCard({ cfg, set, saveNow }: { cfg: Config; set: (c: Config 
       </details>
 
       <div className="stack" style={{ gap: 8 }}>
-        <b>Spotify</b>
+        <b>Spotify, Apple Music m.fl. – spellistor, album och poddar</b>
         <p className="muted" style={{ margin: 0 }}>
-          Med integrationen Spotify i Home Assistant visar fliken Musik vad som spelas, med Spela/Paus och Nästa. Låtar startar du från Spotify-appen.
+          För att välja och spela spellistor, album och poddar på tavlan behövs <b>Music Assistant</b> (gratis). Fliken Musik (biblioteket) visar steg för steg hur det installeras – med en knapp i Home Assistant OS, och för Home Assistant i Docker en text att klistra in i Portainer, Synology eller Unraid. Radion fungerar utan.
         </p>
-        <a className="btn small" style={{ alignSelf: "flex-start" }} href={haAddIntegration("spotify")} target="_top" rel="noopener">
-          <Icon name="plus" size={16} /> Lägg till Spotify i Home Assistant
+        <a className="btn small" style={{ alignSelf: "flex-start" }} href={haAddIntegration("music_assistant")} target="_top" rel="noopener">
+          <Icon name="plus" size={16} /> Koppla Music Assistant till Home Assistant
         </a>
       </div>
     </section>

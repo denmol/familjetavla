@@ -1,4 +1,4 @@
-import type { CarEntity, Config, ConfigResponse, Dashboard, Integration, NamedEntity, Schedule, TestResult, TravelChoice, VacuumEntity } from "../../server/src/types";
+import type { ApplianceEntities, CarEntity, Config, SecurityEntities, ConfigResponse, Dashboard, Integration, NamedEntity, Schedule, StoreFood, StoreFoodData, FoodPart, TestResult, TravelChoice, VacuumEntity, CarCharging, ChargeRule } from "../../server/src/types";
 
 /** A station in the Musik tab: every Swedish station from the radio directory. */
 export interface DirStation {
@@ -8,6 +8,23 @@ export interface DirStation {
   logo?: string;
   group: "sr" | "other";
   quality?: string;
+}
+
+/** A cover in the Musik tab's library (Music Assistant: Spotify playlists, albums, podcasts …). */
+export interface Tile {
+  uri: string;
+  type: "playlist" | "album" | "artist" | "track" | "podcast" | "audiobook" | "radio";
+  title: string;
+  subtitle?: string;
+  image?: string;
+}
+export type Shelf = "recent" | "playlists" | "albums" | "podcasts" | "radios";
+/** One song in a playlist or album. */
+export interface Track {
+  uri: string;
+  title: string;
+  artist?: string;
+  image?: string;
 }
 
 /** A station from the radio directory (Inställningar → Huset → Musik). */
@@ -31,7 +48,10 @@ export interface Discovery {
   priceSensors: NamedEntity[];
   buttons: { name: string; entityId: string }[];
   speakers?: NamedEntity[];
+  security?: SecurityEntities;
   vacuums?: (VacuumEntity & { maker?: string })[];
+  robots?: (NamedEntity & { battery?: string })[];
+  appliances?: ApplianceEntities[];
   summary: string[];
 }
 
@@ -48,6 +68,8 @@ export interface CarDetails {
     schedule: { entityId: string; name: string; value: string }[];
   };
 }
+
+export type ControlOp = "toggle" | "on" | "off" | "press" | "set" | "select" | "time";
 
 export interface GraphData {
   title: string;
@@ -82,14 +104,22 @@ export class ApiError extends Error {
 
 // Relative paths ("api/…", no leading slash) so the app works under Home Assistant ingress.
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
-  const res = await fetch(`api/${path}`, {
-    ...init,
-    headers: {
+  let res: Response;
+  try {
+    res = await fetch(`api/${path}`, {
+      ...init,
+      signal: init.signal ?? AbortSignal.timeout(100_000),
+      headers: {
       ...(init.body ? { "content-type": "application/json" } : {}),
       "x-admin-pin": getPin(),
       ...(init.headers as Record<string, string>),
     },
-  });
+    });
+  } catch (e) {
+    // A request that never answers (the server restarted, the shop is slow) must not leave a button spinning.
+    if ((e as Error).name === "TimeoutError" || (e as Error).name === "AbortError") throw new ApiError(0, "Svaret dröjde för länge – försök igen.");
+    throw e;
+  }
   const text = await res.text();
   let data: { error?: string; code?: string } | null = null;
   try {
@@ -147,30 +177,56 @@ const realApi = {
     request<ConfigResponse>("config", { method: "PUT", body: JSON.stringify({ config, secrets }) }),
   checkPin: () => post<{ ok: boolean }>("auth/check"),
   dashboard: () => request<Dashboard>("dashboard"),
+  /** The week page further ahead (#37): page 1 = days 7–13, … page 8. */
+  calendar: (page: number) => request<{ days: Dashboard["days"] }>(`calendar?page=${page}`),
+  /** One child's own days: everything of theirs, also at the other home (page 0 = the coming seven days). */
+  personDays: (id: string, page: number) => request<{ days: Dashboard["days"] }>(`person-days?id=${encodeURIComponent(id)}&page=${page}`),
+  secureUrl: () => request<{ url: string | null }>("secure-url"),
   travel: (key: string, choice: TravelChoice | null, forCalendar = false) => post<{ ok: true }>("travel", { key, choice, forCalendar }),
   dinner: (day: string, text: string, shopping?: string) => post<{ ok: true }>("dinner", { day, text, shopping }),
   shelf: (personId: string, items: string[]) => post<{ ok: true }>("shelf", { personId, items }),
   backup: (password?: string) => post<unknown>("backup", { password }),
   restore: (backup: unknown, password?: string) => post<{ ok: true; secrets: boolean }>("restore", { backup, password }),
   setSick: (personId: string, date: string, sick: boolean) => post<{ ok: true }>("sick", { personId, date, sick }),
+  setLeave: (personId: string, from: string, to: string, on: boolean) => post<{ ok: true }>("leave", { personId, from, to, on }),
   newsSeen: (ids: string[]) => post<{ ok: true }>("news/seen", { ids }),
-  addOwnEvent: (e: { date: string; time?: string; end?: string; title: string; personId?: string; note?: string }) => post<{ id: string }>("own-events", e),
+  addOwnEvent: (e: { date: string; time?: string; end?: string; title: string; personId?: string; personIds?: string[]; note?: string }) => post<{ id: string }>("own-events", e),
+  cancelEvent: (key: string, on: boolean) => post("events/cancel", { key, on }),
   removeOwnEvent: (id: string) => request<{ ok: true }>(`own-events/${encodeURIComponent(id)}`, { method: "DELETE" }),
 
   testProvider: (integration: Integration, secrets: Record<string, string>) => post<TestResult>("providers/test", { integration, secrets }),
+  providerStores: (integration: Integration, secrets: Record<string, string>) => post<{ value: string; label: string }[]>("providers/stores", { integration, secrets }),
   testHa: (url?: string, token?: string) => post<TestResult>("test/ha", { url, token }),
   entities: (domains: string[]) => request<EntityOption[]>(`ha/entities?domains=${domains.join(",")}`),
   testCalendar: (body: { url?: string; entityId?: string; sourceId?: string; include?: string[]; exclude?: string[] }) =>
     post<CalendarTest>("test/calendar", body),
   postcode: (q: string) => request<PostcodeInfo>(`postcode?q=${encodeURIComponent(q)}`),
 
-  groceryPreview: () => post<{ store: string; lines: GroceryLine[] }>("grocery/preview"),
-  grocerySend: (lines: { item: string; code: string; name: string; qty: number }[]) =>
-    post<{ ok: boolean; store: string; items: number | null; total: string | null }>("grocery/send", { lines }),
+  groceryPreview: (store?: string) => post<{ store: string; lines: GroceryLine[] }>("grocery/preview", { store }),
+  grocerySend: (lines: { item: string; code: string; name: string; qty: number }[], store?: string) =>
+    post<{ ok: boolean; store: string; items: number | null; total: string | null }>("grocery/send", { lines, store }),
+
+  foodStores: () => request<StoreFood[]>("food/stores"),
+  foodChoices: (id: string) => request<{ options: { value: string; label: string }[]; value: string }>(`food/stores/${encodeURIComponent(id)}/choices`),
+  foodSetStore: (id: string, value: string) => post(`food/stores/${encodeURIComponent(id)}/store`, { value }),
+  foodPart: (id: string, part: FoodPart) => request<StoreFoodData>(`food/stores/${encodeURIComponent(id)}/${part}`),
+  foodIcaStrike: (id: string, name: string, done: boolean) => post("food/ica/strike", { id, name, done }),
 
   discover: () => request<Discovery>("ha/discover"),
   car: (index: number) => request<CarDetails>(`car/${index}`),
   carAction: (index: number, entityId: string, action: "on" | "off" | "press") => post(`car/${index}/action`, { entityId, action }),
+  choreToggle: (id: string, done: boolean) => post("chores/toggle", { id, done }),
+  julNice: () => request<{ items: import("./jul/hass").JulItem[] }>("jul/nice"),
+  julService: (service: string, data: Record<string, unknown>) => post<{ items: import("./jul/hass").JulItem[] }>("jul/nice", { service, data }),
+  chores: () => request<{ chores: { id: string; personId: string; title: string; days: number[] }[] }>("chores"),
+  saveChores: (chores: { id: string; personId: string; title: string; days: number[] }[]) => request("chores", { method: "PUT", body: JSON.stringify({ chores }) }),
+  carMode: (index: number, option: string) => post(`car/${index}/mode`, { option }),
+  carSchedule: (index: number, row: { day: number; time: string; soc: number; enabled: boolean }) => post(`car/${index}/schedule`, row),
+  chargePlan: (index: number) => request<CarCharging>(`car/${index}/charging`),
+  saveChargePlan: (index: number, plan: { rules: ChargeRule[]; target: string; limit?: number }) =>
+    request(`car/${index}/charging`, { method: "PUT", body: JSON.stringify(plan) }),
+  deleteChargePlan: (index: number) => request(`car/${index}/charging`, { method: "DELETE" }),
+  chargePlanSet: (index: number, entityId: string, op: ControlOp, value?: string | number) => post(`car/${index}/charging/set`, { entityId, op, value }),
   run: (entityId: string, action: "on" | "off" | "press" = "on") => post("run", { entityId, action }),
   saveSchedule: (s: Schedule) => request(`schedules/${s.id}`, { method: "PUT", body: JSON.stringify(s) }),
   deleteSchedule: (id: string) => request(`schedules/${id}`, { method: "DELETE" }),
@@ -186,6 +242,17 @@ const realApi = {
   toggleLight: (entityId: string) => post("lights/toggle", { entityId }),
   brightness: (entityId: string, pct: number) => post("lights/brightness", { entityId, pct }),
   lightsOff: () => post("lights/off"),
+  lock: (entityId: string, op: "lock" | "unlock" | "open", code?: string) => post("security/lock", { entityId, op, code }),
+  alarm: (entityId: string, mode: "home" | "away" | "night" | "vacation" | "off", code?: string) => post("security/alarm", { entityId, mode, code }),
+  cover: (entityId: string, op: "open" | "close" | "stop") => post("security/cover", { entityId, op }),
+  vacuumOp: (index: number, op: "start" | "pause" | "stop" | "home" | "locate" | "spot" | "fan", value?: string) => post(`vacuum/${index}/action`, { op, value }),
+  vacuumMapUrl: (index: number, version: string) => `api/vacuum/${index}/map?v=${encodeURIComponent(version)}`,
+  vacuumRooms: (index: number, rooms: string[], repeat = 1) => post(`vacuum/${index}/rooms`, { rooms, repeat }),
+  robot: (entityId: string, op: "start" | "pause" | "dock") => post("robots", { entityId, op }),
+  /** A camera's still image; t makes the browser fetch a new one. */
+  cameraUrl: (entityId: string, t: number) => `api/camera/${encodeURIComponent(entityId)}?t=${t}`,
+  saveHomeLayout: (home: { id: string; on: boolean }[]) => post("home-layout", { home }),
+  setHidden: (key: string, hidden: boolean) => post("hidden", { key, hidden }),
   playStation: (index: number, speaker: string) => post("music/play", { index, speaker }),
   stopMusic: (speaker: string) => post("music/stop", { speaker }),
   tryStation: (name: string, url: string, speaker: string) => post("music/try", { name, url, speaker }),
@@ -193,13 +260,20 @@ const realApi = {
   playStationId: (id: string, speaker: string) => post("music/play-id", { id, speaker }),
   favoriteStation: (b: { id?: string; url?: string; on: boolean }) => post("music/favorite", b),
   spotify: (op: "playpause" | "next") => post("music/spotify", { op }),
+  musicLibrary: (shelf: Shelf) => request<{ tiles: Tile[] }>(`music/library?shelf=${shelf}`),
+  musicSearch: (q: string) => request<{ tiles: Tile[] }>(`music/search?q=${encodeURIComponent(q)}`),
+  playConnect: (t: Tile, device: string, shuffle?: boolean) => post("music/play-connect", { uri: t.uri, type: t.type, title: t.title, device, ...(shuffle !== undefined ? { shuffle } : {}) }),
+  playMedia: (t: Tile, speaker: string, start?: string, shuffle?: boolean) => post("music/play-media", { uri: t.uri, type: t.type, title: t.title, speaker, ...(start ? { start } : {}), ...(shuffle !== undefined ? { shuffle } : {}) }),
+  musicItems: (uri: string) => request<{ title: string; tracks: Track[] }>(`music/items?uri=${encodeURIComponent(uri)}`),
+  musicTransport: (speaker: string, action: "play_pause" | "next" | "previous") => post("music/transport", { speaker, action }),
   volume: (speaker: string, pct: number) => post("music/volume", { speaker, pct }),
-  vacuumOp: (index: number, op: "start" | "pause" | "stop" | "home" | "locate" | "spot" | "fan", value?: string) => post(`vacuum/${index}/action`, { op, value }),
-  vacuumMapUrl: (index: number, version: string) => `api/vacuum/${index}/map?v=${encodeURIComponent(version)}`,
-  vacuumRooms: (index: number, rooms: string[], repeat = 1) => post(`vacuum/${index}/rooms`, { rooms, repeat }),
+  musicGroup: (speaker: string, members: string[]) => post("music/group", { speaker, members }),
   searchStations: (q: string) => request<{ stations: StationHit[] }>(`radio/search?q=${encodeURIComponent(q)}`),
-  addItem: (name: string) => post("shopping/add", { name }),
+  addItem: (name: string, offer?: { store: string; id: string }) => post("shopping/add", { name, offer }),
   toggleItem: (id: string, done: boolean) => post("shopping/toggle", { id, done }),
+  /** "Att göra" (#86): the todo.* list in Home Assistant. */
+  todoAdd: (name: string) => post("todo/add", { name }),
+  todoToggle: (id: string, done: boolean) => post("todo/toggle", { id, done }),
   clearDone: () => post("shopping/clear-done"),
 };
 

@@ -56,6 +56,12 @@ export interface NotifySettings {
   morning?: string;
   /** Söndag kl 19: "Planera veckan" om något saknar ansvarig. */
   weekly?: boolean;
+  /** "19:30": kvällen innan sophämtning, "Sopor hämtas imorgon". "" = av, saknas = 19:30. */
+  waste?: string;
+  /** Hemmet: tvätten klar, roboten har fastnat, dörren olåst kl 22, porten öppen, larmet. Saknas = på. */
+  home?: boolean;
+  /** En notis när en ny version av Familjetavlan finns (en gång per version). Saknas = på. */
+  updates?: boolean;
 }
 
 export interface CareSchedule {
@@ -76,7 +82,8 @@ export interface CareSchedule {
   notes?: Record<string, string>;
 }
 
-export type CalendarCategory = "family" | "sport" | "school" | "work" | "other";
+/** "dinner": en kalender med veckans middagar (t.ex. Paprika via Home Assistant) – händelserna blir dagens middag, inte kalenderhändelser. */
+export type CalendarCategory = "family" | "sport" | "school" | "work" | "dinner" | "other";
 
 export type CalendarProvider = "google" | "icloud" | "laget" | "sportadmin" | "svenskalag" | "infomentor" | "outlook" | "ics" | "ha";
 
@@ -88,6 +95,8 @@ export interface CalendarSource {
   kind: "ics" | "ha";
   entityId?: string;
   personId?: string;
+  /** Flera personer som kalendern gäller ("Gäller": Emil + Elin). Är det en enda sätts även personId. */
+  personIds?: string[];
   category: CalendarCategory;
   /** Visa bara händelser som matchar något av dessa (lag, grupp eller ord). Tomt = alla. */
   include?: string[];
@@ -118,12 +127,21 @@ export interface TravelChoice {
   home?: TravelLeg;
 }
 
-export const HOME_WIDGETS = ["now", "meals", "schoolday", "reminders", "custody", "week", "shopping", "prices", "cars", "lights", "temps", "energy", "climates", "music", "vacuums"] as const;
+export const HOME_WIDGETS = ["vacuums", "now", "jul", "meals", "schoolday", "chores", "reminders", "custody", "week", "shopping", "prices", "cars", "lights", "buttons", "homestatus", "todo", "temps", "energy", "climates", "music"] as const;
 export type HomeWidget = (typeof HOME_WIDGETS)[number];
 /** Startskärmens rutor: "auto" följer hur många rutor som visas, annars liten/normal/stor. */
 export type WidgetSize = "auto" | "s" | "m" | "l";
-export const TAB_IDS = ["cars", "lights", "house", "energy", "graphs", "music", "vacuums"] as const;
+export const TAB_IDS = ["food", "cars", "lights", "house", "energy", "graphs", "music", "security", "household", "jul"] as const;
 export type TabId = (typeof TAB_IDS)[number];
+/** Var en snabbknapp visas (#101): på en flik eller på startsidan. Utan val hamnar den under Ljus. */
+export const BUTTON_PLACES = ["lights", "house", "household", "security", "home"] as const;
+export type ButtonPlace = (typeof BUTTON_PLACES)[number];
+export interface QuickButton {
+  name: string;
+  entityId: string;
+  style: "accent" | "blue" | "amber" | "plain";
+  place?: ButtonPlace;
+}
 
 // ---------- Leverantörsmoduler (skola, mataffär, sopor, elpris) ----------
 
@@ -170,6 +188,8 @@ export interface ProviderMeta {
   guide?: string[];
   /** Skola: leverantören hittar själv barnen (t.ex. Vklass) i stället för en kalender per barn. */
   discoversChildren?: boolean;
+  /** Butiker: fältet (nyckeln) där man väljer butik ur en lista, och om listan kräver inloggning. */
+  storePicker?: { field: string; needsLogin?: boolean };
 }
 
 export type SettingValue = string | number | boolean;
@@ -199,21 +219,6 @@ export interface TestResult {
 
 // ---------- Home Assistant-entiteter (märkesoberoende) ----------
 
-export interface CarEntity {
-  name: string;
-  /** Elbil/hybrid: batteri i %. Saknas på bensin- och dieselbilar (då används `fuel`). */
-  battery?: string;
-  /** Bensin/diesel: bränslemängd i liter (eller %). */
-  fuel?: string;
-  /** Tankens storlek i liter, för bränslemätaren när sensorn ger liter. Standard 70 (XC60 och de flesta bilar i klassen). */
-  tankLiters?: number;
-  range?: string;
-  location?: string; // device_tracker, binary_sensor eller sensor
-  charging?: string;
-  /** Förvärmning: climate.*, switch.* eller button.* på bilen. */
-  climate?: string;
-}
-
 /** Robotdammsugare: vacuum.* plus kartan och det som hör till samma enhet. Fungerar med alla märken i Home Assistant. */
 export interface VacuumEntity {
   name: string;
@@ -230,6 +235,59 @@ export interface VacuumEntity {
   sensors?: string[];
   /** Inställningar: select, switch, number, time, button. */
   controls?: string[];
+}
+
+/** Dammsugarens tillstånd i klartext, oavsett märke. */
+export type VacuumPhase = "cleaning" | "returning" | "docked" | "paused" | "idle" | "error" | "offline";
+
+/** Ett rum på kartan, i kartbildens pixlar (när kartan är kalibrerad). */
+export interface VacuumRoom {
+  id: string;
+  name: string;
+  /** Rektangel i kartbildens pixlar; saknas när kartan inte kan kalibreras. */
+  box?: { x: number; y: number; w: number; h: number };
+}
+
+/** En robotdammsugare på tavlan. */
+export interface DashVacuum {
+  index: number;
+  name: string;
+  entityId: string;
+  phase: VacuumPhase;
+  /** "Städar", "Laddar", … */
+  label: string;
+  battery: number | null;
+  charging: boolean;
+  fanSpeed?: string;
+  fanSpeeds: { value: string; label: string }[];
+  room?: string;
+  error?: string;
+  /** Kartan finns; hämtas från /api/vacuum/:index/map. Ändras när bilden uppdateras. */
+  mapVersion?: string;
+  rooms: VacuumRoom[];
+  /** Rumsstädning går att starta (känt märke och rummen hittades). */
+  canRooms: boolean;
+  can: { start: boolean; pause: boolean; stop: boolean; home: boolean; locate: boolean; spot: boolean };
+  rows: { name: string; value: string; ok: boolean }[];
+  controls: Control[];
+}
+
+export interface CarEntity {
+  name: string;
+  /** Elbil/hybrid: batteri i %. Saknas på bensin- och dieselbilar (då används `fuel`). */
+  battery?: string;
+  /** Bensin/diesel: bränslemängd i liter (eller %). */
+  fuel?: string;
+  /** Tankens storlek i liter, för bränslemätaren när sensorn ger liter. Standard 70 (XC60 och de flesta bilar i klassen). */
+  tankLiters?: number;
+  range?: string;
+  location?: string; // device_tracker, binary_sensor eller sensor
+  charging?: string;
+  /** Förvärmning: climate.*, switch.* eller button.* på bilen. */
+  climate?: string;
+  /** Smart laddning: laddplan (sensor med attributet slots) och laddläge (select/input_select). Hittas annars av sig själva, se smartcharging.ts. */
+  plan?: string;
+  mode?: string;
 }
 
 export interface DeviceCard {
@@ -253,6 +311,41 @@ export interface Schedule {
   enabled: boolean;
 }
 
+/** Laddfönster: 22:00–06:00 går över midnatt, samma tid i båda = hela dygnet. */
+export interface ChargeRule {
+  days: number[];
+  from: string; // "22:00"
+  to: string; // "06:00"
+}
+
+/** Laddning för en bil: det som finns i Home Assistant och tavlans eget schema. */
+export interface CarCharging {
+  /** Det som startar och stoppar laddningen: bilens laddbrytare eller laddboxens. */
+  target?: Control;
+  targetOptions: { entityId: string; name: string }[];
+  /** Bilens laddgräns i %. */
+  limit?: Control;
+  /** Laddboxens och laddappars inställningar (t.ex. EV Smart Charging). */
+  settings: Control[];
+  /** Scheman och automationer i HA som redan handlar om laddning. */
+  existing: { entityId: string; name: string; domain: "schedule" | "automation"; on: boolean; next?: string }[];
+  /** Tavlans eget schema: en schemahjälpare och en automation i HA. */
+  own?: {
+    scheduleEntity: string;
+    automationEntity?: string;
+    enabled: boolean;
+    /** Schemat är på just nu (inne i ett laddfönster). */
+    active: boolean;
+    rules: ChargeRule[];
+    target?: string;
+    limit?: number;
+    next?: string;
+    missingAutomation: boolean;
+  };
+  /** Tavlan kan skapa ett eget schema (ansluten till HA och något att styra finns). */
+  canCreate: boolean;
+}
+
 export interface NamedEntity {
   name: string;
   entityId: string;
@@ -267,12 +360,19 @@ export interface EnergyEntities {
   house?: string;
   /** Hembatteri, laddnivå i %. */
   battery?: string;
+  /** Hembatteriets effekt (W eller kW). Positiv = laddar ur, som i Home Assistants energipanel. */
+  batteryPower?: string;
+  /** Batterier som visar laddning som plus (t.ex. Sigenergy): vänd tecknet på batteryPower. */
+  batteryChargePositive?: boolean;
   /** Effekt som säljs ut på nätet, när mätaren har den separat (t.ex. Tibber Pulse "Elproduktion"). */
   gridExport?: string;
   /** Mätarställningar (kWh/Wh) för dagens summor: solproduktion, köpt och såld el. */
   solarEnergy?: string;
   importEnergy?: string;
   exportEnergy?: string;
+  /** Mätarställningar (kWh/Wh) för det som laddats in i och ur hembatteriet. */
+  batteryChargeEnergy?: string;
+  batteryDischargeEnergy?: string;
 }
 
 export interface Config {
@@ -294,15 +394,25 @@ export interface Config {
   people: Person[];
   calendars: CalendarSource[];
   integrations: Integration[];
+  /** "Att göra" på startsidan: en todo.*-lista i Home Assistant (t.ex. Todoist), för odaterade saker (#86). */
+  todo?: {
+    entityId?: string;
+    /** Rubrik på rutan (standard "Att göra"). */
+    title?: string;
+  };
   shopping: {
     source: "local" | "ha";
     entityId?: string; // todo.* i Home Assistant
+    /** Vilken butik (kopplingens id) listan skickas till när flera är valda. */
+    sendTo?: string;
     /** Inköpsrad (gemener) → vald produkt per butik: mappings[provider][rad] */
     mappings: Record<string, Record<string, { code: string; name: string }>>;
   };
   electricity: {
     /** Antal billigaste timmar i följd som markeras. */
     cheapHours: number;
+    /** Elprisstaplarna: per timme (standard) eller per kvart (marknaden prissätter i 15 minuter). */
+    resolution?: "hour" | "quarter";
     /** Påslag från elbolaget, öre/kWh exkl. moms. */
     markupOre: number;
     /** Elöverföring/nätavgift, öre/kWh exkl. moms. */
@@ -319,13 +429,15 @@ export interface Config {
   entities: {
     cars: CarEntity[];
     energy: EnergyEntities;
-    /** Snabbknappar på hemvyn. */
+    /** Lampor på startsidans Ljus-ruta. */
     lights: NamedEntity[];
     temps: NamedEntity[];
-    /** Ljusfliken: grupper med Tänd alla / Släck alla. */
-    lightGroups: { name: string; entities: string[] }[];
-    /** Scener, skript och knappar, t.ex. "Godnatt – släck uppe". */
-    buttons: { name: string; entityId: string; style: "accent" | "blue" | "amber" | "plain" }[];
+    /** Ljusfliken: grupper med Tänd alla / Släck alla. `place` ger gruppen egna knappar även på en annan flik eller startsidan. */
+    lightGroups: { name: string; entities: string[]; place?: ButtonPlace }[];
+    /** Lampor som Tänd alla / Tänd inne hoppar över på natten (t.ex. ett barns rum). */
+    quietLights?: { entities: string[]; from: string; to: string };
+    /** Snabbknappar: scener, skript och knappar, t.ex. "Godnatt – släck uppe". Var de visas väljs per knapp. */
+    buttons: QuickButton[];
     /** Hus-fliken: climate.* och water_heater.* (värmepump, termostat, varmvatten, spabad). */
     climates: (NamedEntity & { controls?: string[] })[];
     /** Hus-fliken: kort byggda av valfria sensorer och reglage (t.ex. värmepump via Husdata). */
@@ -336,12 +448,18 @@ export interface Config {
     speakers?: NamedEntity[];
     /** Musik: favoritkanaler, t.ex. P4 Jönköping eller RIX FM. */
     stations?: RadioStation[];
+    /** Säkerhet: kameror, lås, larm, portar och dörr-/fönstersensorer – vilket märke som helst i Home Assistant. */
+    security?: SecurityEntities;
+    /** Städ: robotdammsugare (vacuum.*) och robotgräsklippare (lawn_mower.*). */
     /** Dammsugare-fliken: robotdammsugare med karta och inställningar. */
     vacuums?: VacuumEntity[];
+    robots?: (NamedEntity & { battery?: string })[];
+    /** Husgeråd: tvättmaskin, torktumlare, diskmaskin, ugn … */
+    appliances?: ApplianceEntities[];
   };
   dashboard: {
     accent: string;
-    theme: "auto" | "dark" | "light" | "eink";
+    theme: "auto" | "dark" | "light" | "eink" | "mirror";
     /** Startskärmens rutor i ordning; av/på per ruta. */
     home: { id: HomeWidget; on: boolean; size?: WidgetSize }[];
     /** Vilka flikar som visas. */
@@ -350,6 +468,18 @@ export interface Config {
     nightTo: string; // "06:00"
     /** Minuter utan beröring innan fotoramen visas. 0 = av. */
     idleMinutes: number;
+    /** Nattläget (svart skärm med klocka mellan nightFrom och nightTo). Saknas = på. */
+    nightMode?: boolean;
+    /** Utseendet: "flat" = ny, lugn och platt design; "glass" = klassiskt blått och glasigt. Saknas = glass. */
+    design?: "flat" | "glass";
+    /** Solbågen under temperaturen i Nu-rutan (av som standard). */
+    sunArc?: boolean;
+    /** Julkortet (Nordpol): "auto" = 21 nov–26 dec, "on" = året runt, "off" = aldrig. Saknas = auto. Se christmas.ts. */
+    christmas?: "auto" | "on" | "off";
+    /** Sidan Skolan: "span" visar bara när skoldagen slutar (och idrott), inte varje lektion. Standard är alla lektioner. */
+    lessons?: "all" | "span";
+    /** Knappar, kort och val som familjen tagit bort under kugghjulet på en sida (#2026-11-14): entity_id, eller entity_id#val för ett läge. Gäller alla skärmar. */
+    hidden?: string[];
   };
 }
 
@@ -365,6 +495,8 @@ export interface ConfigResponse {
   config: Config;
   /** Vilka hemligheter som är satta (aldrig deras värden). */
   secretsSet: string[];
+  /** Kopplingar (id) vars sparade uppgifter klarade senaste testet. */
+  verified: string[];
   providers: ProviderMeta[];
   runtime: {
     supervisor: boolean;
@@ -400,6 +532,8 @@ export interface DashEvent {
   title: string;
   color: string;
   who: string;
+  /** Alla personer händelsen gäller (kalenderns ägare/"Gäller" och namn som nämns i titeln). Saknas = hela familjen. */
+  whoAll?: string[];
   /** Personens initial för avataren. */
   initial?: string;
   category: CalendarCategory | "waste";
@@ -411,9 +545,15 @@ export interface DashEvent {
   /** Beskrivningen från kalendern (samlingstid, vad som behövs …). */
   /** Egen händelse (tillagd på tavlan) – id för att kunna ta bort den. */
   ownId?: string;
+  /** Händelse från en kalender: nyckeln för "Utgår" (döljs bara på tavlan). */
+  cancelKey?: string;
   /** Barnets händelse: kan markeras sjuk den dagen (on = det här är "Sjuk"-markeringen). */
   sick?: { personId: string; date: string; on: boolean };
+  /** Lov-markeringen för ett barn och en dag: kan tas bort från händelsen. */
+  leave?: { personId: string; date: string };
   description?: string;
+  /** Bilagor (läxpapper som PDF eller bild) från skolplattformen, hämtade via tavlans egen filväg. */
+  files?: { name: string; url: string }[];
 }
 
 export interface MealDay {
@@ -453,6 +593,8 @@ export interface DashDay {
   isToday: boolean;
   childrenHome: string[];
   events: DashEvent[];
+  /** When each child's school day ends (all days, with `home` false on the other home's days). */
+  schoolEnds?: { name: string; end: string; gym: boolean; home: boolean }[];
 }
 
 export interface Reminder {
@@ -462,16 +604,24 @@ export interface Reminder {
   tone: "blue" | "amber" | "neutral" | "green";
   /** The child it is about – a grown-up who follows only some children gets only theirs in the phone. */
   personId?: string;
+  /** A news item from the school: a tap opens it to read. */
+  newsId?: string;
 }
 
 export interface PriceBar {
   hour: string; // "00"
+  /** "00", "15", "30" or "45" when the bar is a quarter of an hour. */
+  minute?: string;
   price: number;
   cheap: boolean;
   current: boolean;
 }
 
 export interface Dashboard {
+  /** "flat" = ny, platt design; "glass" = klassisk. Kan ersättas per skärm. */
+  design: "flat" | "glass";
+  /** Nästa hämtning per sorts sopor, närmast först (högst fyra). */
+  waste: { type: string; dayKey: string; label: string }[];
   generatedAt: string;
   header: {
     dateLabel: string;
@@ -511,14 +661,20 @@ export interface Dashboard {
   };
   legend: { name: string; color: string }[];
   days: DashDay[];
-  shopping: { source: "local" | "ha"; items: { id: string; name: string; done: boolean }[] };
+  shopping: { source: "local" | "ha"; items: { id: string; name: string; done: boolean; /** Skickad till den här butiken (senaste dygnen). */ sent?: string }[] };
+  /** "Att göra" (en todo.*-lista i Home Assistant): de öppna uppgifterna. Saknas när ingen lista är vald. */
+  todo?: { title: string; items: { id: string; name: string; done: boolean; due?: string }[] };
   /** Butik att skicka inköpslistan till, om en är vald. */
   grocery?: { provider: string; name: string };
+  /** Alla valda butiker (listan skickas till `grocery`). */
+  groceries?: { id: string; provider: string; name: string }[];
   prices?: {
     now: number;
     level: "billigt" | "normalt" | "dyrt";
     /** "spot" = spotpris, "total" = med påslag, nät, skatt och moms. */
     kind: "spot" | "total";
+    /** "quarter" när staplarna är kvartar. */
+    resolution?: "hour" | "quarter";
     bars: PriceBar[];
     cheapest?: { from: string; to: string; avg: number };
   };
@@ -526,11 +682,13 @@ export interface Dashboard {
     solarKw?: number;
     /** Positiv = köper från nätet, negativ = säljer. */
     gridKw?: number;
-    /** Husets förbrukning: egen sensor, annars sol + köpt − såld. */
+    /** Husets förbrukning: egen sensor, annars sol + köpt − såld + batteriets urladdning. */
     houseKw?: number;
     /** Solel som används i huset just nu (sol − såld). */
     selfUseKw?: number;
     batteryPct?: number;
+    /** Positiv = batteriet laddar ur till huset, negativ = batteriet laddar. */
+    batteryKw?: number;
     /** Sedan midnatt, ur mätarställningarna i Home Assistant. */
     today?: {
       solarKwh?: number;
@@ -538,7 +696,9 @@ export interface Dashboard {
       exportKwh?: number;
       houseKwh?: number;
       selfUseKwh?: number;
-      /** Andel av förbrukningen som solen täckt, 0–100. */
+      batteryChargeKwh?: number;
+      batteryDischargeKwh?: number;
+      /** Andel av förbrukningen som inte köpts från nätet (sol och batteri), 0–100. */
       selfSufficiencyPct?: number;
       /** Köpt el gånger timpriset (med påslag om sådant är inlagt). */
       costKr?: number;
@@ -549,8 +709,14 @@ export interface Dashboard {
   schoolNews: SchoolNews[];
   /** Sidan Skolan: veckans schema, läxor och uppgifter per barn. */
   school?: SchoolChild[];
+  /** "span": Skolan shows when the day starts and ends, not every lesson. */
+  lessonView?: "all" | "span";
+  /** Det som tagits bort under sidornas kugghjul (entity_id, eller entity_id#val). */
+  hidden: string[];
   /** En nyare version finns publicerad. */
   update?: { latest: string; current: string };
+  /** Running version, and the published one when known: "v0.10.0 ✓ senaste" or "uppdatera till …" in the header. */
+  version?: { current: string; latest?: string };
   /** "Skolan idag": when each child's school day starts and ends (today, or the next school day). */
   schoolDay?: { personId: string; name: string; color: string; dayLabel: string; start: string; end: string; gym: boolean }[];
   /** Veckans mat: skollunch per barn och familjens middag, kommande 7 dagar. */
@@ -561,6 +727,8 @@ export interface Dashboard {
   sick: { personId: string; name: string; date: string }[];
   /** "Saknas på hyllan" per barn på förskola/fritids. */
   shelf: { personId: string; name: string; items: string[] }[];
+  /** Dagens sysslor per barn (bocka av på tavlan). */
+  chores: import("./chores.js").ChoresForPerson[];
   cars: {
     name: string;
     battery: number | null;
@@ -574,13 +742,18 @@ export interface Dashboard {
     ageHours: number | null;
     status: string;
     climate?: { entityId: string; on: boolean };
+    /** Smartstyrd laddning: plan och laddläge (samma överstyrning som smartstyrningens egen knapp). */
+    smart?: import("./smartcharging.js").SmartCharging;
     schedules: { id: string; name: string; days: number[]; time: string; enabled: boolean }[];
   }[];
   lights: Lamp[];
   music?: Music;
+  security?: Security;
   vacuums: DashVacuum[];
-  lightGroups: { index: number; name: string; on: number; total: number; offline: string[]; lamps: Lamp[] }[];
-  buttons: { entityId: string; name: string; style: "accent" | "blue" | "amber" | "plain" }[];
+  robots?: Robot[];
+  appliances?: ApplianceView[];
+  lightGroups: { index: number; name: string; on: number; total: number; offline: string[]; lamps: Lamp[]; place?: ButtonPlace }[];
+  buttons: QuickButton[];
   climates: {
     entityId: string;
     name: string;
@@ -594,7 +767,10 @@ export interface Dashboard {
     /** Pumpar, lampor, blåsare m.m. på samma enhet (t.ex. spabadets). */
     controls: Control[];
   }[];
-  temps: { name: string; value: string }[];
+  /** Lägesväljare för smart styrning (Auto först = följer sitt eget schema), hittade i Home Assistant. */
+  smartModes: { entityId: string; name: string; mode: string; options: string[] }[];
+  /** Temperatursensorer. `offline` när Home Assistant inte har något värde, och `days` = hur länge sedan sensorn senast ändrade sig (för "offline sedan 50 dagar"). */
+  temps: { name: string; value: string; offline?: boolean; days?: number }[];
   deviceCards: {
     index: number;
     title: string;
@@ -604,9 +780,11 @@ export interface Dashboard {
   }[];
   graphs: { index: number; title: string }[];
   accent: string;
-  theme: "auto" | "dark" | "light" | "eink";
+  theme: "auto" | "dark" | "light" | "eink" | "mirror";
   home: { id: HomeWidget; on: boolean; size?: WidgetSize }[];
   tabs: { id: TabId; on: boolean }[];
+  /** Julkortet (Nordpol): när det ska visas och hemmets plats för släden (christmas.ts). */
+  jul?: import("./christmas.js").ChristmasView;
   /** Dygnsfärger: "day" eller "night" utifrån klockan. */
   daypart: "day" | "night";
   night: boolean;
@@ -619,7 +797,7 @@ export interface SchoolChild {
   name: string;
   color: string;
   /** Måndag–fredag den här veckan (nästa vecka på helgen). */
-  days: { dayKey: string; label: string; today: boolean; lessons: { start: string; end: string; title: string; location?: string; gym: boolean }[] }[];
+  days: { dayKey: string; label: string; today: boolean; hours?: { start: string; end: string; gym: boolean }; lessons: { start: string; end: string; title: string; location?: string; gym: boolean }[] }[];
   /** Läxor, prov och uppgifter de kommande två veckorna. */
   tasks: {
     dayKey: string;
@@ -632,6 +810,8 @@ export interface SchoolChild {
     detail?: string;
     /** Opens the task on the school platform. */
     url?: string;
+    /** The attachments (homework sheet), fetched through the board: api/school/file?u=… */
+    files?: { name: string; url: string }[];
   }[];
 }
 
@@ -657,45 +837,33 @@ export interface Music {
     volume?: number;
     /** The stream playing now, to mark it in the Musik tab's list of all stations. */
     playingUrl?: string;
+    /** Låt, artist och album separat (när högtalaren säger det), omslag via /api/music/cover och hur långt låten har kommit. */
+    paused?: boolean;
+    /** Radio: texten som kanalen skickar med strömmen (artist – låt, "rullande texten"/RDS), om den skiljer sig från kanalens namn. */
+    radioText?: string;
+    track?: string;
+    artist?: string;
+    album?: string;
+    cover?: boolean;
+    position?: number;
+    duration?: number;
+    /** När `position` gällde (ISO), så att tavlan kan räkna fram var låten är nu. */
+    positionAt?: string;
+    canPause?: boolean;
+    canNext?: boolean;
+    canPrev?: boolean;
+    /** De andra högtalarna (entity_id) som spelar tillsammans med den här via Music Assistant (#93). */
+    group?: string[];
   }[];
+  /** Music Assistant känner till minst två av högtalarna: de kan spela tillsammans. */
+  groupable?: boolean;
   stations: { index: number; name: string; logo?: string; url: string }[];
   /** Home Assistant's Spotify integration: null when it is not installed (the tab then says how). */
-  spotify: { entityId: string; playing: boolean; title?: string; device?: string; offline: boolean } | null;
-}
-
-/** Dammsugarens tillstånd i klartext, oavsett märke. */
-export type VacuumPhase = "cleaning" | "returning" | "docked" | "paused" | "idle" | "error" | "offline";
-
-/** Ett rum på kartan, i kartbildens pixlar (när kartan är kalibrerad). */
-export interface VacuumRoom {
-  id: string;
-  name: string;
-  /** Rektangel i kartbildens pixlar; saknas när kartan inte kan kalibreras. */
-  box?: { x: number; y: number; w: number; h: number };
-}
-
-/** En robotdammsugare på tavlan. */
-export interface DashVacuum {
-  index: number;
-  name: string;
-  entityId: string;
-  phase: VacuumPhase;
-  /** "Städar", "Laddar", … */
-  label: string;
-  battery: number | null;
-  charging: boolean;
-  fanSpeed?: string;
-  fanSpeeds: { value: string; label: string }[];
-  room?: string;
-  error?: string;
-  /** Kartan finns; hämtas från /api/vacuum/:index/map. Ändras när bilden uppdateras. */
-  mapVersion?: string;
-  rooms: VacuumRoom[];
-  /** Rumsstädning går att starta (känt märke och rummen hittades). */
-  canRooms: boolean;
-  can: { start: boolean; pause: boolean; stop: boolean; home: boolean; locate: boolean; spot: boolean };
-  rows: { name: string; value: string; ok: boolean }[];
-  controls: Control[];
+  spotify: { entityId: string; playing: boolean; title?: string; device?: string; offline: boolean; devices: string[] } | null;
+  /** Namnet på musiktjänsten i Music Assistants bibliotek (Spotify, Apple Music …); saknas tills det är läst. */
+  libraryName?: string;
+  /** Music Assistant is in Home Assistant: the Musik tab shows the library (playlists, albums, podcasts) as covers. */
+  assistant: boolean;
 }
 
 /** One lamp on the board. brightness 1–100 when it is on and can be dimmed. */
@@ -723,4 +891,93 @@ export interface SchoolNews {
   /** Bilagor hämtas via tavlan: `url` är en adress på tavlan, inte i Vklass. */
   files: { name: string; url: string }[];
   seen: boolean;
+}
+
+export interface SecurityEntities {
+  cameras: NamedEntity[];
+  locks: NamedEntity[];
+  alarms: NamedEntity[];
+  /** Garage doors and gates (cover.*). */
+  covers: NamedEntity[];
+  /** Doors and windows (binary_sensor.* door/window/garage_door/opening). */
+  openings: NamedEntity[];
+  /** Unlocking from the board is off unless the family turns it on. */
+  allowUnlock?: boolean;
+}
+
+export type LockState = "locked" | "unlocked" | "locking" | "unlocking" | "jammed" | "open" | "opening" | "unknown";
+export type AlarmMode = "home" | "away" | "night" | "vacation";
+
+/** The Säkerhet tab. */
+export interface Security {
+  cameras: { entityId: string; name: string; offline: boolean }[];
+  locks: { entityId: string; name: string; state: LockState; offline: boolean; needsCode: boolean; canOpen: boolean }[];
+  alarms: { entityId: string; name: string; state: string; label: string; armed: boolean; triggered: boolean; offline: boolean; modes: AlarmMode[]; needsCode: boolean }[];
+  covers: { entityId: string; name: string; state: string; label: string; open: boolean; offline: boolean }[];
+  openings: { entityId: string; name: string; open: boolean; offline: boolean }[];
+  allowUnlock: boolean;
+}
+
+/** The Städ tab: one robot vacuum or mower. */
+export interface Robot {
+  entityId: string;
+  name: string;
+  kind: "vacuum" | "mower";
+  state: string;
+  /** In Swedish, e.g. "Städar", "Laddar", "Har fastnat". */
+  label: string;
+  busy: boolean;
+  error: boolean;
+  offline: boolean;
+  battery?: number;
+  canStart: boolean;
+  canPause: boolean;
+  canDock: boolean;
+}
+
+/** One machine: its state sensor and/or a power plug, with time left and progress when it has them. */
+export interface ApplianceEntities {
+  name: string;
+  kind: "washer" | "dryer" | "dishwasher" | "oven" | "other";
+  status?: string;
+  remaining?: string;
+  progress?: string;
+  power?: string;
+}
+
+export interface ApplianceView {
+  name: string;
+  kind: ApplianceEntities["kind"];
+  phase: "running" | "paused" | "done" | "idle" | "error" | "offline";
+  /** "Tvättar – 42 min kvar", "Klar", "Av". */
+  label: string;
+  minutesLeft?: number;
+  /** "11:20". */
+  endsAt?: string;
+  progress?: number;
+}
+
+/** Delar av en butik under fliken Mat. */
+export type FoodPart = "list" | "cart" | "common" | "offers" | "recipes";
+
+/** Fliken Mat, en butik: vilka delar som finns och är påslagna (innehållet hämtas först när delen öppnas). */
+export interface StoreFood {
+  id: string;
+  provider: string;
+  name: string;
+  parts: FoodPart[];
+}
+
+/** Innehållet i en del, hämtat på begäran. */
+export interface StoreFoodData {
+  /** Butiken erbjudandena gäller (orten eller butiksnamnet). */
+  store?: string;
+  offers?: { id: string; name: string; brand?: string; size?: string; price?: string; note?: string; image?: string; validTo?: string }[];
+  /** Vad som redan ligger i butikens varukorg. */
+  cart?: { items: { name: string; qty: string; price?: string }[]; total?: string };
+  /** "Mina vanligaste varor". */
+  common?: { name: string }[];
+  recipes?: { id: number; title: string; time?: string; ingredients?: number; image?: string; url: string }[];
+  list?: { name: string; rows: { id: string; name: string; done: boolean }[]; /** Webbutikens sök-adress med {q} där varan ska stå (när man valt butik). */ webSearch?: string };
+  errors?: Record<string, string>;
 }

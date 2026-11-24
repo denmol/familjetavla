@@ -1,15 +1,316 @@
 # Ändringar
 
-## 0.11.1
+## 0.34.0
 
-- **InfoMentor via Home Assistant.** Ny skolkälla som läser InfoMentor-integrationens (HACS) **Skoldag-sensor** i stället för en kalenderlänk: tavlan visar skolans riktiga start- och sluttid ("Skolan idag 08:30–15:30"). Sensorn byter dag varje natt och visar nästa skoldag, så tavlan minns tiden per datum och kan visa den även samma dag. Skolans kalender (simprov, utklädningsdag, turneringar) och nyheter hämtas också, och nyheter som "friluftsdag – ta med matsäck" blir påminnelser.
-- **Skoltiden räknas rätt.** En enstaka händelse i skolkalendern, som ett simprov, tas inte längre för hela skoldagen. Skolans egna händelser syns i Nu och Kommande 7 dagar.
+**Julkortet: Nordpol på tavlan** (julstämning från 21 november till 26 december).
+
+- Ny flik **Jul** med [Nordpol Card](https://github.com/DKAnord/nordpol-card) av DKAnord (MIT): nedräkning till julafton, fyra tomtekameror, släde som visar när tomten kommer till just ert hem, en **snällista** för barnen (håll in rubriken i en sekund för föräldraläget) och dagens tomte. Allt på svenska.
+- På startsidan syns en liten markör i rubrikraden (**"33 dagar till jul"**) som öppnar fliken, och i det klassiska utseendet en egen ruta, **Jul**.
+- **Visas som standard 21 november – 26 december varje år.** Under **Inställningar → Visning → Julkort** väljer du **Automatiskt**, **Alltid på** eller **Av**. Du kan stänga av det när du vill; en familj som valt Av ser det aldrig.
+- Snällistan sparas i tavlans egen fil, så kortet fungerar utan Home Assistant. Släden använder hemmets plats från installationen (Stockholm om ingen är angiven).
+- Kamerorna är korta filmklipp som webbläsaren hämtar från kortets egen sida (dkanord.github.io) medan fliken Jul är öppen. Inget annat lämnar tavlan.
+
+## 0.33.0
+
+**Välj var snabbknapparna visas** (#101).
+
+- Varje snabbknapp under Inställningar → Huset → Snabbknappar har nu valet **Visas på**: Ljus, Hus, Hushåll, Säkerhet eller Startsidan. Ett skript som skickar dammsugaren hem kan alltså ligga under Hushåll i stället för under Ljus.
+- På startsidan hamnar knapparna i en egen ruta, **Snabbknappar** (i det nya utseendet: i raden längst ner).
+- Knappar du redan har ligger kvar under Ljus tills du väljer något annat.
+- **Egna ljusgrupper med egna knappar.** Bygg grupper av valfria lampor under Inställningar → Huset → Ljusgrupper, t.ex. *Fönsterlampor* och *Utebelysning*. Varje grupp har Tänd alla / Släck alla på fliken Ljus och kan nu få egna Tänd- och Släck-knappar även på startsidan, Hus, Hushåll eller Säkerhet (valet *Tänd/Släck-knappar även på*). I det nya utseendet blir det en knapp i raden längst ner som släcker när något lyser och tänder när allt är släckt.
+
+**Ny koppling: Tyra (förskola)** (#28, experimentell).
+
+- Under Inställningar → Skola finns nu **Tyra (förskola)**. Logga in med mobilnummer och lösenord som i Tyra-appen (inte BankID). Barnen hittas automatiskt, och förskolans kalender (utflykter, planeringsdagar, stängt) och dagens omsorgstid hamnar på tavlan.
+- Kopplingen är ny och inte provad mot ett riktigt konto än. Tryck **Testa** och berätta i ärende #28 hur det gick.
+
+## 0.32.1
+
+- **Lerum går att välja igen** under Sophämtning. Lerums tjänst spärrar anrop utifrån Sverige, men fungerar för familjer i Sverige.
+
+## 0.32.0
+
+**Eget laddschema på Bil-fliken** (för bilar utan smart laddning).
+
+- Nytt kort **Laddschema**: gör ett eget schema, till exempel mån–fre 22:00–06:00. Det sparas i Home Assistant som en schemahjälpare och en automation som slår på och av laddningen, så det fungerar även när tavlan är avstängd och syns i Home Assistant. Valfritt: sätt laddgränsen när schemat startar. Av/på, Ändra och Ta bort direkt från tavlan.
+- Kortet visar också det som redan finns: laddboxar (Easee, Zaptec, Wallbox, Charge Amps, go-e, Ohme, Zappi, OCPP …), laddgränsen och automationer och scheman i Home Assistant som handlar om laddning.
+- Kortet visas bara för bilar **utan** smart laddning (EV Smart Charging). Styr en smart laddning redan bilen skulle ett andra schema slåss med den.
+- Bil på telefon: bilarna ligger under varandra i stället för i smala kolumner där texten klipptes.
+
+## 0.31.1
+
+**Rättat: spellistor i Musik gick inte att öppna.**
+
+- *Home Assistant svarar inte just nu* när man öppnade en spellista. Två orsaker:
+  - Efter en omstart på natten hängde anslutningen till Home Assistant medan Home Assistant fortfarande startade, och tavlan försökte aldrig igen. Nu ansluter tavlan igen själv om den inte kommer fram inom 20 sekunder, eller om Home Assistant slutar svara (en kontroll var 30:e sekund).
+  - Music Assistant har fått nya entiteter som inte är spelare och inte kan visa en spellista ("was not found"). Tavlan använder nu bara riktiga Music Assistant-spelare, helst högtalaren du valt. Det gör också att en högtalare inte kopplas till fel spelare när du trycker spela.
+
+## 0.31.0
+
+**Lägg in i kalendern direkt från tavlan, för en eller flera.**
+
+- **Plusknapp i veckan**, bredvid *Kalender*, och **Lägg till** på Kalender-sidan. Båda öppnar *Lägg till på tavlan*.
+- **Vem gäller det? Välj en eller flera.** Tryck till exempel på Emil och Alicia. En person hamnar i sin egen kolumn. Flera hamnar i Gemensamt med allas färgprickar. Väljer du ingen gäller det hela familjen (*Alla*).
+
+## 0.30.0
+
+**Ta bort det du inte vill se.**
+
+- **Kugghjulet på Hus, Ljus, Säkerhet, Grafer, Musik och Hushåll har *Ta bort saker på sidan*.** Varje kort och knapp får ett ×, till exempel spabadets *Blower* eller ett läge du aldrig använder. Det du tar bort försvinner på alla skärmar. Medan du ändrar syns det bleknat med en knapp för att ta tillbaka det. *Klar* avslutar.
+- En öppning som du tagit bort (till exempel tvättmaskinens lucka) räknas inte heller i *öppet* på Säkerhet.
+
+## 0.29.0
+
+**Musik, spabad och grafer.**
+
+- **Tavlan minns vad du valde sist i Musik:** högtalaren, Radio eller Spotify, och hyllan (Spellistor, Album …), också efter omstart. Förut gick den tillbaka till första högtalaren efter fem minuter.
+- **Volym − och + i steg om 5**, bredvid reglaget. Lättare att träffa på surfplattan än att dra.
+- **Flera högtalare samtidigt** (#93). Tryck *Flera*, kryssa i högtalarna, så spelar radion eller spellistan i alla. Kräver Music Assistant. Tryck *Flera* igen för att spela i en högtalare.
+- **Spellistor visar dina listor från Spotify.** Music Assistants egna listor ("500 Random tracks", "Infinite Mix" …) med dess logga visas inte längre. Fliken heter Spotify (eller Apple Music, Tidal …) även när Music Assistant inte säger var listorna kommer ifrån.
+- **Grafer timme för timme**, ritade som *Dygnet timme för timme* i EnergyWizard: klockslag längs nederkanten, ett streckat *nu*, en trappkurva per serie och under den en rad timrutor per serie där starkare färg betyder mer. Förut stod samma klockslag i båda ändarna (11:31 … 11:31).
+- **Knapparna i spabadets kort** heter *Pump 1*, *Economy Mode* och *Lights* i stället för att upprepa *Spabad*. Långa namn bryts på två rader i stället för att klippas.
+
+## 0.28.0
+
+- **Lugnare och tydligare.**
+  - En färg betyder en person. *Gemensamt* var grönt, samma färg som en av personfärgerna, och är nu neutralt grått (i veckan och på händelserna).
+  - På Ljus är bara *Tänd inne* och *Tänd ute* gröna. En tänd lampa lyser själv.
+  - Etiketter som "NU" och "LUNCH IDAG" står i vanlig skiftläge, och rubrikerna är mindre feta.
+  - Versionen i sidhuvudet är dämpad text.
+  - Avatarerna pulserar inte längre.
+  - I elpriset är den här timmen inte längre röd, eftersom nu inte betyder dyrt.
+  - Ikoner i stället för emoji och tecken i meddelanden, bilagor och listor.
+- **Läsbar text i övre raden.** Nu, Idag, Maten och Att göra krymper inte under 85 %. Får innehållet inte plats rullar rutan, i stället för att texten blir 11 pixlar hög.
+- **Inställningsguiden ser ut som tavlan**, även när den öppnas direkt (första start). Förut föll den tillbaka på det klassiska lila och glasiga utseendet.
+- **Sidhuvudet har tre knappar:** Aa, ljust/mörkt och inställningar. *Ladda om* och *Installera som app* finns under Aa (på telefon står Installera kvar uppe).
+- **Rättat: en aktivitet med skjuts i en smal veckokolumn** (många personer) bröts en bokstav per rad. Skjutsbrickan hamnar nu på egen rad under titeln.
+
+## 0.27.1
+
+- **Installera som app via https: rätt adress.** Gäller certifikatet för flera namn visade tavlan det första, som kunde vara ett helt annat ställe. Nu visas certifikatets eget namn, eller det du anger med `HTTPS_HOST`. Exempel i `docker-compose.yml` för Let's Encrypt, och om att namnet måste peka på datorn inne i hemmanätet (#91).
+- **Licens: AGPL-3.0** från och med den här versionen, samma som EnergyWizard. Versioner till och med 0.27.0 släpptes under MIT.
+- Källkoll larmar inte längre falskt om Boden, Kiruna och Lidköping: de svarar bara svenska adresser och fungerar för familjer i Sverige.
+
+## 0.27.0
+
+- **Flikarna och sidorna har läsbar text.** Mat, Bil, Hus, Ljus, Energi, Kalendern och de andra krympte allt för att få plats, och på Mat blev texten bara några pixlar hög. I nya designen visas de nu i full storlek, och man rullar för resten.
+- **Kugghjul på varje flik och sida**, uppe till höger bredvid Hem: **Textstorlek** 70–200 % för just den sidan på just den skärmen. Köksplattan kan till exempel ha större text på Mat.
+
+## 0.26.0
+
+- **Att göra på startsidan.** En ruta för odaterade saker (boka sotning, byta hallampa, beställa filter) från en todo-lista i Home Assistant, till exempel Todoist eller Home Assistants egen. Välj listan under Inställningar → *Mat & inköp* → **Att göra på startsidan**, och ge rutan en egen rubrik om du vill. Ett tryck bockar av en uppgift, och **Lägg till** skriver en ny, som hamnar i listan i Home Assistant (och därmed i Todoist). Uppgifter med datum står först. I nya designen står rutan till höger om veckan och kan flyttas, breddas eller döljas som de andra. I den klassiska slås den på under Startskärm. Tack pjdhub (#86).
+
+## 0.25.0
+
+- **När barnen slutar skolan, varje dag.** Veckan visar "slutar 14:45" för varje barn och dag, också nästa vecka, längre fram i kalendern och de dagar barnet är hos den andra föräldern (då lite dämpat). Förut syntes det bara den här veckans måndag–fredag och bara de dagar barnet var här. Under veckans kugghjul, **När skolan slutar**, väljer du *Alla dagar*, *Bara dagar hos oss* eller *Visa inte*.
+- **Allt om ett barn på ett ställe.** Tryck på barnets namn så visas alla träningar, matcher, läxor, prov, idrott och när skolan slutar, även de veckor barnet är hos den andra föräldern (märkta "hos den andra föräldern"). Med **Senare** och **Tidigare** bläddrar du vecka för vecka upp till åtta veckor fram. Under kugghjulet i barnets vy, **Dagar**, väljer du *Alla, även hos den andra föräldern* eller *Bara dagar hos oss*.
+- Kalendrar och skola hämtas nu en gång för hela kalenderns nio veckor, i stället för en gång per sida. Det blir färre inloggningar mot Vklass och färre tidsgränser.
+
+## 0.24.0
+
+- **Bygg startsidan som ett pussel.** Tryck på kugghjulet i en ruta och välj **Flytta och ändra storlek på rutorna**, eller välj **Ordna startsidan** under Aa → Rutor.
+  - **Dra en ruta** och släpp den på en annan, så byter de plats.
+  - **Dra i strecket** mellan två rutor i samma rad, så blir den ena bredare och den andra smalare.
+  - **Pilarna** på varje ruta flyttar den åt vänster eller höger i raden, eller upp och ner till en annan rad (eller en ny rad). **Smalare/Bredare** ändrar bredden ett steg i taget.
+  - **Ångra**, **Återställ** (som startsidan såg ut från början), **Avbryt** och **Klar**. Inget sparas förrän du trycker Klar.
+  - Raden med Veckan växer i höjd, de andra tar den plats de behöver. Står Veckan i en smal ruta visas personerna under varandra inom varje dag, som på telefon.
+  - Gäller den här skärmen (iPaden och en annan skärm kan se olika ut). På telefon står rutorna i samma ordning, en per rad.
+
+## 0.23.0
+
+- **Kalender längre fram än sju dagar.** Knappen **Kalender** i veckan öppnar kalendern. Med **Senare** och **Tidigare** bläddrar du vecka för vecka upp till åtta veckor fram, med datum och veckonummer överst. **Nu** tar dig tillbaka. Händelser, skjuts, barnvecka, middag och sophämtning visas som i veckan. Startsidan visar fortfarande de kommande sju dagarna. Tack jonssonc (#37).
+- **Kugghjul på varje ruta.** Ett litet kugghjul uppe till höger öppnar inställningarna för just den rutan (textstorlek, täthet, dagar, vad som visas, dölj). Det finns på Nu, Idag, Maten och Veckan, och bredvid namnen i personvyn. Raden längst ner (temperatur, ljus, musik) har ingen ruta att sätta det i: håll in den, eller välj den under Aa → Rutor. Att hålla in en ruta fungerar som förut.
+
+## 0.22.0
+
+- **Hembatteri räknas in i huset.** Nytt fält **Hembatteri – effekt** under Inställningar → Energi. Med det räknar tavlan in batteriet i husets förbrukning (det saknades förut, så "Huset nu" kunde visa flera kW för lite på kvällen) och visar om batteriet laddar eller laddar ur. Batterier som räknar laddning som plus (till exempel Sigenergy) har en egen brytare. Under *Dagens kWh* finns också **Laddat i hembatteriet** och **Urladdat ur hembatteriet**, och självförsörjningen räknar då med det batteriet gav tillbaka. Tack v3r1t4s82 (#59).
+- **Ny ruta Hemmet** för den klassiska designen: lampor ("2 av 3 tända" och **Släck allt**), lås (läget och en **Lås**-knapp för olåsta, upplåsning stannar på Säkerhet) och tvätt, tork och disk med "klar 16:42". Av som standard, slås på under Inställningar → Startskärm. Tack SanSebb (#45).
+- **Varning om ett annat program tagit tavlans port.** Svarar något annat än tavlan på `localhost` loggas det vid start, med hur man hittar programmet eller byter port. Tack androidand (#30).
+- **Startsidan på telefon:** rutan Idag blev över 1 000 pixlar hög och veckan hoptryckt. Nu har varje ruta sin naturliga höjd och sidan rullar.
+- **Sophämtning:** Boden, Kiruna, Lidköping och Nacka svarar igen och går att välja. Ger adressökningen ingen träff säger tavlan också att renhållarens sökning kan vara nere. June Avfalls adressökning svarar just nu tomt för alla adresser, men den som redan valt sin adress får fortfarande hämtdagar.
+- **Radio:** Mix Megapol hittas igen (katalogen kallar den nu "Mix Megapol 104,3").
+
+## 0.21.1
+
+- **Håll in en ruta fungerar på iPad.** Safari avbröt fingret när det hölls still (iPadens egen långtrycksgest), och när fingret lyftes stängdes bladet direkt igen. Nu räcker knappt en halv sekund, och bladet stannar öppet.
+- **Veckan i läsbar storlek, även när den inte ryms.** Schemat krympte tidigare tills alla dagar fick plats, och då blev texten för liten. Nu har schemat på startsidan, sidan Veckan och personvyn alltid full textstorlek, och man rullar ner för resten av dagarna. Nederkanten tonas när det finns mer.
+- **Tryck på ett namn ovanför schemat** så öppnas den personens vecka med schema, läxor och uppgifter.
+- **Rutorna går också att ställa in under Aa → Rutor**, med en knapp per ruta, om man inte vill hålla in.
+- **Tavlan laddar om sig själv när en ny version är installerad.** En tavla på väggen körde den gamla versionen tills någon tryckte på ladda om. Den väntar om ett blad är öppet.
+
+## 0.21.0
+
+- **Ställ in varje ruta för sig.** Håll fingret en stund på en ruta på startsidan (Nu, Idag, Maten, Veckan, raden längst ner) eller på veckan i personvyn, så öppnas inställningar för just den rutan på just den skärmen:
+  - **Textstorlek** – större eller mindre text. Texten blir så stor som rutan har plats för, så inget hamnar utanför.
+  - **Täthet** – kompakt, normal eller luftig.
+  - **Antal dagar** i veckan (3–7 eller alla).
+  - **Visa** allt, bara läxor eller bara träningar och matcher.
+  - **Personer** – vilka som syns i veckan.
+  - **Dölj rutan.** De andra rutorna i raden breddas. Under **Aa → Rutor** får du tillbaka dolda rutor och kan återställa alla.
+  
+  Färre dagar eller en dold ruta ger mer plats, och då kan texten bli större. Veckan går inte att dölja.
+
+## 0.20.1
+
+- **Bilagor öppnas i tavlan och du kommer alltid tillbaka.** "Öppna" tog dig tidigare bort från tavlan till själva filen, och på en iPad i helskärmsläge finns då ingen knapp tillbaka. Nu öppnas PDF, Word (som PDF) och bilder i en helskärmsvy med en tydlig **Stäng**. **Ladda ner** använder iPadens delningsruta ("Spara i Filer") så att du inte lämnar tavlan.
+- **Glosor som tabell.** Ord och översättning står bredvid varandra i två kolumner, som i Vklass, i stället för ett ord per rad. I listan skrivs de som "ord – översättning".
+- **Sidan går inte att dra eller nypa-zooma på en surfplatta.** En inzoomad eller flyttad tavla skars av i kanten och gick att dra åt alla håll. Nu är sidan låst i tavlans vyer.
+
+## 0.20.0
+
+- **Lov.** Ny flik **Lov** under "Lägg till på tavlan": välj barnen och från–till-datum, så utgår skola, förskola, fritids och hämtning/lämning de dagarna, medan träningar och matcher finns kvar. Dagarna märks "Lov – ledig" och går att ta bort från händelsen. Tack Freland (#52).
+- **Egna entiteter.** I alla val av entitet (bil, laddning, värmestart, sensorer m.fl.) går det nu att skriva en egen `entity_id` om sökningen inte hittar den, till exempel en egen `input_boolean` eller `switch`. Tack Carlin75 (#62).
+
+## 0.19.0
+
+- **Skolmat från Home Assistant visas inte längre dubbelt.** Skolmat-integrationen skickar samma rätter både i rubriken och i beskrivningen ("A | B" och "[Lunch] • A • B"), och tavlan visade bägge. Nu visas varje rätt en gång. Tack frelev (#60).
+- **Matsedel från en kalenderlänk (SchoolSoft m.fl.).** Står matsedeln i kalendern som heldagshändelser som heter "Matsedel" (SchoolSoft med Lunch menu påslaget, eller "Lunch") blir de lunch på tavlan i stället för kalenderhändelser. Rubrikraden ("Huvudrätt", "Vegetariskt", "Lunch") tas bort, och dagens två Matsedel-händelser (vanlig och vegetarisk) slås ihop. Tack CrallH (#66).
+- **Middag från en kalender.** Ny kalendertyp **Middag (veckans meny)**, till exempel Paprika via Home Assistant: kalenderns händelser blir dagens middag på Maten och i veckan, och visas inte som vanliga händelser. En middag man själv skriver in på tavlan går före. Tack et05hk6 (#61).
+
+## 0.18.0
+
+- **Bilagor till läxor och uppgifter syns på tavlan.** Läxpappret från Vklass (PDF, Word eller bild) visas direkt i händelsen och uppgiften, så att man inte behöver gå in i Vklass. En PDF visas som hel sida med sidbyte, och ett tryck öppnar den i helskärm för att läsa. Ett Word-dokument görs om till PDF på tavlan (med webbläsaren som redan finns i imagen) och visas på samma sätt, med reserv som läsbar sida. Varje bilaga har **Öppna** och **Ladda ner** (Word både som PDF och som original).
+- **Rätt etikett på uppgifterna.** Tavlan gissade om något var läxa, prov eller uppgift från titeln. Nu används det ord Vklass själv skriver ("Läxa, Svenska"), så Nyhetsuppläsare är en läxa och inte en uppgift. En uppgift som är idag får bilagan även på kvällen.
+- **Krympningen fungerar i Safari.** På en iPad kunde veckan skäras av efter tre dagar och texter klippas, eftersom krympningen byggde på CSS `zoom` som Safari och Chrome tolkar olika. Den använder nu `transform`, som beter sig likadant överallt. Det gäller både den nya och den klassiska designen.
+- Testerna provas nu även i Safaris motor (WebKit) och mot riktig data.
+
+## 0.17.0
+
+- **Den nya designen finns nu på alla sidor** (Bil, Hus, Ljus, Energi, Mat, Grafer, Musik, Säkerhet, Hushåll, personvyn och Skolan), inte bara startsidan. Den klassiska designen är oförändrad och fortfarande standard. Den nya designen är byggd för skärmar på tvären; stående skärmar stöds inte där tills vidare.
+- **Allt ryms alltid, vid vilken skärmstorlek (60–130 %) som helst.** Inget scrollar, inget döljs bakom "+N" och inget får täcka något annat. Om något inte får plats krymper det i stället. Texter bryter rad i stället för att kapas med "…".
+- **Bil:** bägge bilarna sida vid sida på samma sida, med laddning, värmestart och elpris. Laddplanen visas som stapel och sammanfattning.
+- **Ljus:** "Inne" och "Ute" överst med Tänd och Släck, hela lampnamn, och lampor som inte svarar göms. På startsidan finns "Tänd inne" och "Släck inne".
+- **Vem som kör** syns vid varje träning och match i veckan på startsidan. Läxor, prov och uppgifter har egen färg och etikett, och läxtexten står direkt i personvyn.
+- **Läxpapper från Vklass:** bifogade läxor (PDF eller bild) visas direkt på tavlan, så att man inte behöver gå in i Vklass.
+- **Lampor som inte får tändas på natten:** en ny inställning (`quietLights`) gör att "Tänd alla" och "Tänd inne" hoppar över utpekade lampor, till exempel ett barns rum, mellan två klockslag. Släck fungerar alltid.
+- **Spabadets knappar** visar korta namn ("Blower" i stället för "Spabad Spa …: Blower") och ryms i rutorna.
+- **Planera-knappen** täcker inte längre kolumnrubrikerna, och sidhuvudet bryter rad vid stor skärmstorlek i stället för att bli bredare än skärmen.
+- Testerna kör nu hela enhetsserien i den nya designen, vid tre skärmstorlekar.
+
+## 0.16.0
+
+- **Ny design (valbar): lugn, platt och tät.** Under Inställningar → Startskärm → Utseende väljer du "Ny" eller "Klassisk" (blå och glasig) för hela familjen, och knappen "Aa" på en skärm kan välja sitt eget. Den nya designen har ett typsnitt i fem storlekar, samma hörn och luft överallt, en tunn linje i stället för skuggor och oskärpa, och knappar som aldrig bryter rad. Ljust och mörkt läge finns i båda. Den klassiska designen är oförändrad och förblir standard.
+- **Ny startsida i den nya designen:** Nu (de två närmaste sakerna), idag (väder, sopor, när skolan slutar och en sak att komma ihåg) och Maten överst. Veckan per person i full bredd under, med alla sju dagar synliga och inget "+N". Temperatur, ljus och musik i en rad längst ner som öppnar sin flik. Att ordna om korten gäller bara den klassiska designen.
+- **Sophämtning på startsidan:** nästa hämtning per sorts sopor ("Kärl 1 imorgon · Kärl 2 ons 18/11").
+- **Värmestartens veckodagar** är cirklar på en rad (M T O T F L S) i stället för text som bröts lodrätt.
+
+## 0.15.0
+
+- **Schemat är tillbaka på sidan Skolan.** I 0.14.6 försvann lektionslistan för alla. Nu visas alla lektioner igen som standard, och "Bara när skoldagen slutar" är ett val under Inställningar → Skola ("Lektioner på sidan Skolan"). Tack CrallH.
+- **Home Assistant erbjuder inte längre en version som saknar images** (404 "manifest unknown" vid uppdatering till 0.14.7 och 0.14.8). Versionen i `familjetavla/config.yaml` höjs bara av release-jobbet när imagerna finns, och CI stoppar en pull request som ändrar den. Tack CrallH och SanSebb.
+- **Skärmstorlek för den här skärmen.** Knappen "Aa" i sidhuvudet gör allt mindre eller större (60–130 %), per enhet. En 11-tums iPad på tvären startar på 85 %, så att fler kort får plats utan att bläddra. Höjderna följer med så att tavlan fyller skärmen, och knapparna är fortfarande minst 44 px stora.
+- **Kommande 7 dagar med en kolumn per person.** Dagarna som rader och personerna som kolumner, med barnens skolslut ("slutar 14:30 · idrott") överst i deras ruta. Det som gäller flera (Barnvecka …) står en gång under "Gemensamt" med en prick per person i stället för under var och en. Personer utan något den veckan får ingen kolumn.
+- **Personvyn:** "Skolan slutar 14:00" (börjar står i mindre text), och läxor, prov och händelser går att trycka på för mer information.
+- **Sopor:** en notis kvällen innan hämtning, som standard kl 19:30 – eget klockslag eller av under Inställningar → Påminnelser. June Avfall (och andra EDP-renhållare) visar bara de första tio adresserna: skriver du gatan utan nummer får du nu veta att du ska lägga till numret.
+- **Det man valt syns.** Ett sparat val i en lista (till exempel adressen för sophämtning) visas nu när man kommer tillbaka, i stället för ett tomt fält.
+- **Snyggare och lugnare sidor.** Bil, Hus och Energi har lika höga kort, "Laddplan" heter "Laddning" och diagrammet "Elpris och laddning" (inga dubbletter), batterikortet upprepar inte bilens namn, knappar och ringar är lägre, och lamporna har reglaget på samma rad som namnet.
+- **Välj om skärmsläckaren ska användas.** Knappen "Aa" (och Inställningar → Startskärm → "Den här skärmen") har nu en ruta "Skärmsläckare på den här skärmen": avstängd här stänger av både fotoramen och nattläget på just den skärmen, så att iPaden kan vara utan medan hallskärmen behåller den. Skärmsläckaren går som standard kl 22–06 och tiderna ställer man själv i Inställningar. Där finns "Skärmsläckare på natten" för hela familjen, och fotoramen på dagen stängs av med "Aldrig".
+- **Temperaturer visar bara det som finns.** En sensor som inte hittas eller inte svarar visas inte längre som "–" eller som en gul varning, varken på startsidan eller under Hus.
+- **Startsidan:** "Middag ikväll" står inte längre en tredje gång i Kom ihåg (den finns i Maten och i veckan), om det inte finns en varning att visa.
+- **Rättat:** knappen "+N kort till" kunde hamna ovanpå ett kort när hela sidan var förminskad.
+
+## 0.14.9
+
+- **Butikslistan går att skriva i när ingen butik hittas.** Hittade City Gross (eller Willys/Hemköp) ingen butik på orten fanns bara valet "Automatiskt", fast meddelandet sa "skriv ortens namn". Nu visas ett skrivfält när listan är tom, och "Annan ort – skriv själv…" sist i en lista med träffar.
+
+## 0.14.8
+
+- **Skola24: välj grupp inom klassen.** Har klassen grupper (till exempel 7:1, 7:2, 7A eller ämnesgrupper som 7MAS) får du efter test med klassen välja grupp och bara gruppens schema, i stället för hela årskursens. Grupperna hör ihop med klassen via namnet. Lämnar du "Hela klassen" blir det som förut. Önskat av Christian Hollbjär.
+
+## 0.14.7
+
+- **Elpris per kvart eller per timme:** under Inställningar → Elpris väljer du om staplarna visar timpris (som förut) eller kvartspris. Elmarknaden prissätter varje 15 minuter, och kvartsvyn visar de kommande 24 timmarna med rätt tid på axeln. Fungerar med spotpriset och med Home Assistants nordpool-sensor. Laddplanen och "Markera billigaste" räknar fortfarande i hela timmar. Önskat av Christian Hollbjär.
+
+## 0.14.6
+
+- **Skolan visar bara läxor, prov och när skoldagen slutar.** Vklass skickar tider med blanksteg (`2026-11-02 08:10`), och då räknades varje lektion som en heldagsuppgift: lektionerna dök upp som "Uppgift" och i veckolistan. Nu visas bara sluttid (och idrott) samt riktiga läxor, prov och uppgifter, och trycker man på en öppnas lärarens text.
+- **Ingen förskola "idag" på söndag.** Vklass visar sin senaste omsorgstid även på helgen; den gäller nu bara vardagar.
+- **Hemskärmen på 11-tums iPad:** knappen "visa hela veckan" täcker inte längre kortet ovanför, kort som inte får plats hoppas över så att ett mindre kort efter det kan använda platsen, och Nu-rutan är tätare.
+
+## 0.14.5
+
+- **Laddplan och elpris i samma graf (Bil):** timpriset som staplar (billigaste timmarna gröna, nuvarande röd) med en rad per bil under, som visar exakt när varje bil laddar, plus tid och batteri före och efter planen. Ersätter det separata elpriskortet på bilsidan när bilarna har smartstyrd laddning.
+- **Solprognos i grafen:** publicerar smartstyrningen attributet `solar_forecast` (watt per timme) ritas den som en gul yta bakom staplarna, och bilens rad får "sol ca 11–16 (solladdning)" när ingen nätladdning är planerad. Se docs/SMART-LADDNING.md.
+
+## 0.14.4
+
+- **Familjetavla syns för alla i Home Assistant.** Tillägget i sidomenyn var bara synligt för administratörer. Nu syns det även för användare som inte är admin, till exempel barnen. Tack Christian Hollbjär.
+
+## 0.14.3
+
+- **Musik: rätt namn på tjänsten.** Biblioteksknappen i Musik heter nu det Music Assistant faktiskt har kopplat – Apple Music, Tidal, Deezer, YouTube Music … (inte alltid "Spotify"). Spotify-rutan visas bara när det är Spotify. Tack Oskar Ax.
+- **Musik: radiokanaler från Music Assistant (TuneIn m.fl.).** Ny hylla **Radio** i biblioteket med de kanaler som ligger i Music Assistant, och sökningen hittar radiokanaler också.
+- **Radio på Music Assistant-högtalare:** en kanal startas som en radio-ström i Music Assistant först (HomePod/AirPlay m.fl.), och faller tillbaka på vanlig uppspelning. Kanaler utanför Sveriges Radio gav fel på dessa högtalare.
+
+## 0.14.2
+
+- **Kalendrar kan gälla flera personer:** under Kalendrar väljer du nu en eller flera personer vid "Gäller" (till exempel Emil och Elin för en gemensam vuxenkalender), eller Hela familjen. Händelserna syns då i personernas veckovy. **Delade kalendrar känner igen namn i rubriken** ("Elin tandläkare", "Alicia och Esther kommer") och kopplar händelsen till dem. Hela familjens händelser visas dämpat i varje persons vy.
+
+## 0.14.1
+
+- **Tryck på ett namn i toppen och se personens vecka:** namnen (Em, A, El …) är nu knappar med ring och tipset "Tryck på en person". Personvyn visar de kommande sju dagarna per person: skolans start och sluttid, **gympadagar** ("ta med gymkläder"), **läxor och prov**, **träningar och matcher** med tider, plats och skjuts samt **skollunch och middag**. Längst ner finns läxor och prov som ligger längre fram. En rad med alla personer låter dig hoppa mellan dem.
+- **Laddplanen visar varje block snyggt:** tid, en stapel efter hur mycket el blocket ger, batteri före och efter ("32 → 46 %") och effekt. Dagen står bara på första raden för varje dag, och upp till tio block syns.
+- **Morgonmål:** publicerar smartstyrningen `morning_check` ("minst 50 % kl 06:00") visar tavlan "✓ 50 % kl 06:00 (golv 50 %)", eller en varning om planen inte räcker. Nya valfria fält i avtalet, se docs/SMART-LADDNING.md.
+
+## 0.14.0
+
+- **Willys och Hemköp loggar in utan webbläsare:** tavlan använder samma krypterade inloggningsanrop som butikernas egna sidor (kartlagt av hemkop-cli och willys-mcp, båda MIT). Det går på någon sekund i stället för en halv minut, och Hemköp fungerar igen.
+- **Ny flik Mat:** veckans mat på ett ställe – barnens skollunch per dag, familjens middagar (med Planera), inköpslistan och, om ni valt ICA, **ICA-erbjudanden** från er favoritbutik (med "På listan"), **recept** och själva **ICA-listan** att bocka av. Fliken ligger först efter Hem och kan flyttas eller döljas under Startskärm.
+- **Dra ned för att ladda om fungerar nu** även på riktiga telefoner och plattor (Chrome tog över svepet förut). Volymsvepet i Musik gäller bara när musik spelar. Ladda om-knappen finns alltid kvar.
+- **Installationen visar vad som är anslutet:** en butik med sparad inloggning får märket "Ansluten ✓" och formuläret säger "Inloggad". Det finns också en **Ladda om**-knapp överst på inställningssidorna.
+- **Spara-knapp bredvid Testa** i installationen, och ett lyckat test sparar av sig självt. Förut sparades inget förrän man tryckt Nästa hela vägen.
+- **Menyn längst ner tar dig alltid till flikens första sida:** även när du är inne på en sida (Veckan, Maten …) går **Hem** till startsidan och en flik till sin början. Trycker du på fliken du redan är på går den till toppen (Musik tillbaka till radion).
+- **Fler butiker för inköpslistan:** **ICA** (listan läggs i en inköpslista i ICA-appen, med personnummer och PIN som i appen – tack till [ha-ica-todo](https://github.com/lazytarget/ha-ica-todo) för kartläggningen) och **City Gross** (sök med pris och bild per butik, och varukorgen på citygross.se). Willys och Hemköp fanns redan. Alla tre är inofficiella och märkta experimentella.
+- **Nu spelas:** stort omslag, förloppsrad och, för radio, rullande RDS-text med låt och artist.
+- **Temperaturer** med tydligare siffror och färg per rum.
+- **Grafer, Hushåll och Säkerhet i ny design:** mjukare linjer med rena axlar och chips för period, Husgeråd med ikon, status och förloppsrad per maskin, och Säkerhet med chips för öppna dörrar och fönster samt larmstatus. Större tryckytor och bättre läsbarhet.
+- **Nytt volymreglage:** en riktig skjutreglage (fylld bana, stor tumme, ljudikon som stänger av ljudet) i musikkortet och i Musik, och ett glas-reglage när man sveper för volym. Det klipps inte längre av kortet.
+- **Notis när det finns en ny version** av Familjetavlan, till de vuxna som har notiser på (en gång per version; kan stängas av under Notiser).
+- **Ladda om-knapp** uppe till höger (pilarna), bredvid temat och inställningarna. Den laddar om tavlan och hämtar senaste versionen. Att dra ner för att ladda om sidan finns kvar, men händer inte längre när du sveper ner för att sänka volymen.
+- **Rullistor** i installationen har läsbar text i listan (mörkt tema).
+- **Val i installationen:** "Sysslor för barnen" under Familjen. De är av som standard.
+- **Sysslor:** en ruta på startsidan där barnen bockar av det de ska göra innan skärmtid ("Plocka undan", "Packa väskan"). Per barn och veckodag, nollställs varje dag, och "Klart! 🎉" när allt är gjort. Lägg till och ta bort under **Ändra** (kräver PIN om du satt en). Tavlan skickar också `sensor.familjetavla_sysslor_<namn>` ("klart" eller "2 kvar") till Home Assistant, så en automation kan till exempel hålla tv:n avstängd tills sysslorna är gjorda. Förslag från Robert Allert.
+
+## 0.13.0
+
+- **Smart laddning:** har du en smartstyrning som planerar bilens laddning visas **planen** under Bil (band över kommande timmar, blocken, kWh och batteri efter planen), med knapparna **Auto / Ladda nu / Pausa**. Laddknappen ger samma överstyrning som smartstyrningens egen app. Hittas av sig själv om styrningen följer [avtalet](../docs/SMART-LADDNING.md).
+- **Laddschema (klar kl, mål %) per veckodag** går att läsa och ändra under Bil om smartstyrningen publicerar det. Ändringen sparas hos smartstyrningen och slår igenom i dess egen app.
+- **Auto för värme, varmvatten och spabad:** väljare vars första alternativ är Auto (följer sitt eget schema) visas under Hus under **Smart styrning**, utan inställningar.
+- **Uppdateras av sig själv med Docker:** `docker compose up -d` startar nu också Watchtower, som hämtar nya versioner av tavlan var sjätte timme. Vill du inte det: ta bort tjänsten `watchtower` i docker-compose.yml.
+- Spellistan startar nu även när Spotify först måste släppa en gammal ström: tavlan väntar upp till en minut i stället för att visa "Tidsgräns nådd", och säger vad som hänt om Spotify nekar.
+
+## 0.12.0
+
+- **Https med Home Assistants certifikat:** har HA https (Let's Encrypt, DuckDNS …) körs tavlan även på https på port 8443 med samma certifikat. Då kan Chrome installera tavlan som en riktig app, och installera-knappen leder dit. Se README → Väggplattan.
+- **Fliken Säkerhet** – kameror, lås, larm, garageport/grind och dörrar/fönster, från vilket märke som helst i Home Assistant (Verisure, Yale, Nuki, Reolink, UniFi, Ring, Somfy …). Kamerorna visar en stillbild som uppdateras; tryck för stor bild. Låsa går alltid – **låsa upp från tavlan är avstängt** tills familjen slår på det, och då frågar tavlan först (och efter koden om låset vill ha en). Larmet visar de lägen panelen har.
+- **Fliken Hushåll** – tvättmaskin, torktumlare, diskmaskin och ugn med tid kvar och när de är klara (Miele, Bosch/Siemens, Electrolux, Samsung, LG … eller en vanlig maskin bakom en smart kontakt), och robotdammsugare och robotgräsklippare med Städa/Klipp, Paus och Åk hem.
+- **Notiser från hemmet** till den som är hemma: "Tvätten är klar", "Dammsugaren har fastnat", "Ytterdörren är olåst" kl 22, "Garageporten har stått öppen i en halvtimme" – och larmet till alla. Valbart per vuxen under Påminnelser.
+- **Flikarna syns bara om man väljer dem.** "Hämta från Home Assistant" hittar kameror, lås, maskiner och robotar men kryssar inget i.
+- **Spellistor som i Spotify:** tryck på ett omslag så öppnas spellistan eller albumet med alla låtar, omslag och en stor **Spela**. Tryck på en låt så börjar listan där. Välj **I ordning** eller **Blandat**.
+- **Volym med ett svep:** medan musik spelar, svep uppåt eller nedåt i fliken Musik eller på musikrutan på startsidan (på mobil på raden med det som spelas). En stapel visar volymen mitt på skärmen medan du sveper, som i en videospelare. Knapparna − och + finns kvar.
+- **Minns volymen** som senast valdes för varje högtalare och sätter den när musiken startar där igen.
+- **Kortare kanalvy:** alla kanaler ligger bakom **Fler kanaler ▾** – favoriterna syns direkt.
+- **Utgår:** tryck på en händelse i kalendern och välj **Utgår** – den försvinner från tavlan, Nu och påminnelserna (kalendern ändras inte).
+- **Länkar i Vklass-nyheter** (veckobrev som PDF, anmälningsformulär …) blir knappar att öppna direkt.
+- **Spotify Connect:** Spotify-vyn kan också spela på soundbaren, Sonos, tv:n och andra enheter som ert Spotify-konto ser.
+- **Väcker högtalaren:** en högtalare eller soundbar som står av slås på innan musiken startar.
+- **Mobil:** med många flikar ligger de sista under **Mer**. Sidrubriker får plats mellan Tillbaka och Hem.
+- **Läs skolans nyheter direkt i Kom ihåg:** tryck på "Från skolan: …" så öppnas hela meddelandet med bilder och bilagor – på startsidan och på sidan Kom ihåg.
+- **Skolan utan alla lektioner:** under Skola kan man välja "Bara när skoldagen börjar och slutar" – då visar sidan Skolan börjar/slutar och idrott i stället för varje lektion.
+- **Spegelskärm:** tavlan provas nu även på en stående Full HD-skärm (MagicMirror-stil) innan varje släpp.
 
 ## 0.11.0
 
-- **Bensin- och dieselbilar.** En Volvo XC60 (eller annan bil utan batteri) upptäcks nu via sin bränslesensor och visas med bränslemätare i liter, räckvidd, hemma/borta och värmestart. Tankens storlek ställs in i guiden (standard 70 L).
-- **Dammsugare.** Ny flik och ruta för robotdammsugare i Home Assistant: husets karta där du trycker på rummen du vill städa (Roborock och Dreame), starta, pausa, åk hem, hitta, sugkraft, inställningar (moppläge, volym, stör inte …) och förbrukningsdelar. Andra märken får start, paus, hem, sugkraft och karta.
-- **Testtillägg.** Tillägget heter nu Familjetavla Test och har egen image, så det kan köra bredvid originalet.
+- **Spotify på tavlan, som i bilen.** Fliken Musik har nu **Radio** och **Spotify**. Spotify visar Hem (det ni spelat senast och era spellistor som omslag), Spellistor, Album, Poddar och Sök. Ett tryck spelar i vald högtalare – Google/Nest, Sonos, AirPlay, Echo … Plattor bläddrar med ‹ › och rullar aldrig.
+- Spotify-biblioteket kräver **Music Assistant** (gratis). Saknas det visar fliken hur man installerar det: en knapp i Home Assistant OS, och för Home Assistant i Docker en text att klistra in i Portainer, Synology eller Unraid (med Kopiera-knapp). Radion fungerar utan.
+- **Versionen syns högst upp,** smått bredvid veckan: "v0.11.0 ✓ senaste" när ni har den senaste, eller "v0.10.0 · uppdatera till 0.11.0" i gult när en ny finns. Tryck på den gula så står det hur du uppdaterar.
+- **Håll inne en ruta för att ordna startsidan.** Rutorna blir lådor med sina namn: dra dem (⠿) eller flytta med ↑ ↓ och tryck Klar. **Dölj** frågar först, och en dold ruta kan tas tillbaka direkt ("+ Musik") eller under Inställningar → Startskärm. Ett vanligt tryck öppnar rutan som förut.
+- **Går hem själv från fritids.** Under Familjen → barnet: "Brukar hämta" kan vara **Går/cyklar hem själv** (och "Brukar lämna" Går/cyklar dit själv). Ingen behöver hämta, ingen får påminnelse, och tavlan skriver "Går hem själv".
+- **Sophämtning i Stockholm (experimentell):** Stockholm Vatten och Avfall (villor och radhus) – skriv adressen som "Gata nr, Ort, postnummer". Bor du i Stockholm, säg gärna om det fungerar.
+- **Spegel-tema** för MagicMirror² och andra speglar: vitt på helsvart, inga rutor eller animationer. Välj under Startskärm, eller för en enda skärm med `?tema=spegel` i adressen (även `?tema=eink`).
+- **"Installera som app"** visas när tavlan öppnas i en webbläsare som kan installera den. Inte nu gömmer den i 30 dagar.
+- **Solbågen** är ett val under Startskärm och av som standard.
+- **Guiden:** långa formulär (t.ex. Svenska lag) kapas inte längre – guiden rullar så att Testa och alla knappar går att nå.
 
 ## 0.10.0
 

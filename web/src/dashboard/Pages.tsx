@@ -1,10 +1,15 @@
-import { useEffect, useMemo, useState } from "react";
-import type { Control, Dashboard, Lamp } from "../../../server/src/types";
-import { api, type CarDetails, type GraphData } from "../api";
+import { hourBuckets, shortControl } from "../../../server/src/pagebits";
+import { Hide } from "../hide";
+import { useEffect, useId, useMemo, useState } from "react";
+import type { CarCharging, ChargeRule, Control, Dashboard, Lamp } from "../../../server/src/types";
+import { api, type CarDetails, type ControlOp, type GraphData } from "../api";
 import { Icon } from "../Icon";
 import type { Actions } from "./Dashboard";
-import { Ring } from "./bits";
+import { AnimatedNumber, Ring } from "./bits";
 import { PriceCard } from "../widgets/prices";
+import { useDesign } from "../uiscale";
+import { insideGroups, outsideGroups, setGroups } from "./lightGroups";
+import { QuickButtons } from "./QuickButtons";
 import { carLevel } from "../widgets/cars";
 
 const DAYS = ["Mån", "Tis", "Ons", "Tor", "Fre", "Lör", "Sön"];
@@ -12,12 +17,28 @@ const fmtNum = (n: number | null | undefined, d = 1) => (n === null || n === und
 
 // ---------- Generic control (switch / select / number / button) ----------
 
-export function ControlView({ c, actions }: { c: Control; actions: Actions }) {
+export function ControlView({ c: control, actions, send, device }: { c: Control; actions: Actions; send?: (op: ControlOp, value?: string | number) => Promise<unknown>; device?: string }) {
+  const c = { ...control, name: shortControl(control.name, device) };
+  const call = send ?? ((op: ControlOp, value?: string | number) => api.control(c.entityId, op as "toggle" | "select" | "set" | "press", value));
+  if (c.domain === "time" || c.domain === "input_datetime") {
+    return (
+      <label className="field">
+        <span>{c.name}</span>
+        <input
+          type="time"
+          defaultValue={c.state.slice(0, 5)}
+          key={c.state}
+          disabled={c.offline}
+          onBlur={(e) => e.target.value && e.target.value !== c.state.slice(0, 5) && actions.run(c.name, () => call("time", e.target.value))}
+        />
+      </label>
+    );
+  }
   if (c.domain === "select" || c.domain === "input_select") {
     return (
       <label className="field">
         <span>{c.name}</span>
-        <select value={c.state} disabled={c.offline} onChange={(e) => actions.run(c.name, () => api.control(c.entityId, "select", e.target.value))}>
+        <select value={c.state} disabled={c.offline} onChange={(e) => actions.run(c.name, () => call("select", e.target.value))}>
           {(c.options ?? [c.state]).map((o) => (
             <option key={o} value={o}>
               {o}
@@ -30,7 +51,7 @@ export function ControlView({ c, actions }: { c: Control; actions: Actions }) {
   if (c.domain === "number" || c.domain === "input_number") {
     const v = Number(c.state);
     const step = c.step ?? 1;
-    const set = (n: number) => actions.run(c.name, () => api.control(c.entityId, "set", Math.min(c.max ?? Infinity, Math.max(c.min ?? -Infinity, n))));
+    const set = (n: number) => actions.run(c.name, () => call("set", Math.min(c.max ?? Infinity, Math.max(c.min ?? -Infinity, n))));
     return (
       <div className="row gap">
         <span className="grow">{c.name}</span>
@@ -48,7 +69,7 @@ export function ControlView({ c, actions }: { c: Control; actions: Actions }) {
   }
   if (c.domain === "button" || c.domain === "input_button") {
     return (
-      <button className="btn" disabled={c.offline} onClick={() => actions.run(c.name, () => api.control(c.entityId, "press"))}>
+      <button className="btn" disabled={c.offline} onClick={() => actions.run(c.name, () => call("press"))}>
         {c.name}
       </button>
     );
@@ -58,7 +79,7 @@ export function ControlView({ c, actions }: { c: Control; actions: Actions }) {
       className={`light-btn ${c.on ? "on" : ""} ${c.offline ? "offline" : ""}`}
       aria-pressed={c.on}
       disabled={c.offline}
-      onClick={() => actions.run(c.name, () => api.control(c.entityId, "toggle"))}
+      onClick={() => actions.run(c.name, () => call("toggle"))}
     >
       {c.name}
     </button>
@@ -103,7 +124,13 @@ function ScheduleEditor({ car, actions }: { car: Dashboard["cars"][number]; acti
           <b className="tabular" style={{ fontSize: 22 }}>
             {s.time}
           </b>
-          <span className="grow muted">{s.days.length === 7 ? "Alla dagar" : s.days.map((d) => DAYS[d - 1]).join(" ")}</span>
+          <span className="grow day-dots" role="img" aria-label={s.days.length === 7 ? "Alla dagar" : s.days.map((d) => DAYS[d - 1]).join(" ")}>
+            {DAYS.map((d, i) => (
+              <i key={d} className={s.days.includes(i + 1) ? "on" : ""} title={d}>
+                {d.charAt(0)}
+              </i>
+            ))}
+          </span>
           <button className="btn small ghost" aria-label="Ta bort schema" onClick={() => actions.run("Schema", () => api.deleteSchedule(s.id))}>
             <Icon name="x" size={18} />
           </button>
@@ -220,7 +247,7 @@ function CarDetailsSheet({ index, onClose, actions }: { index: number; onClose: 
             <div className="stack" style={{ gap: 0 }}>
               {rows.map((r) => (
                 <div key={r.entityId} className="row gap" style={{ padding: "12px 0", borderBottom: "1px solid var(--card-border)" }}>
-                  <span aria-hidden="true">{r.ok ? "✓" : "⚠"}</span>
+                  <Icon name={r.ok ? "check" : "alert"} size={16} />
                   <span className="grow">{r.name}</span>
                   <span style={{ color: r.ok ? "var(--muted)" : "var(--amber)", textAlign: "right" }}>
                     {r.value}
@@ -233,6 +260,153 @@ function CarDetailsSheet({ index, onClose, actions }: { index: number; onClose: 
         )}
       </div>
     </div>
+  );
+}
+
+type Smart = NonNullable<Dashboard["cars"][number]["smart"]>;
+
+const hhmm = (iso: string) => new Date(iso).toLocaleTimeString("sv-SE", { hour: "2-digit", minute: "2-digit" });
+const dayName = (iso: string) => {
+  const d = new Date(iso);
+  const today = new Date();
+  const same = (a: Date, b: Date) => a.toDateString() === b.toDateString();
+  if (same(d, today)) return "idag";
+  if (same(d, new Date(today.getTime() + 86_400_000))) return "imorgon";
+  return d.toLocaleDateString("sv-SE", { weekday: "short" });
+};
+
+/** Laddplanen för de kommande 24 timmarna som ett band, med blocken listade under. */
+function PlanBar({ slots }: { slots: Smart["slots"] }) {
+  const t0 = Date.now();
+  const lastEnd = Math.max(0, ...slots.map((s) => Date.parse(s.end)));
+  const span = Math.min(48, Math.max(24, Math.ceil((lastEnd - t0) / 3_600_000 / 6) * 6)) * 3_600_000;   // 24 h, men längre (högst 48 h) så att hela planen syns
+  const t1 = t0 + span;
+  const shown = slots.filter((s) => Date.parse(s.end) > t0 && Date.parse(s.start) < t1);
+  const pct = (t: number) => Math.max(0, Math.min(100, ((t - t0) / (t1 - t0)) * 100));
+  return (
+    <div className="stack" style={{ gap: 6 }}>
+      <div style={{ position: "relative", height: 22, borderRadius: 11, background: "rgba(120,130,150,0.22)", overflow: "hidden" }} aria-label="Planerad laddning">
+        {shown.map((s) => (
+          <div key={s.start} title={`${hhmm(s.start)}–${hhmm(s.end)}`} style={{ position: "absolute", top: 0, bottom: 0, left: `${pct(Date.parse(s.start))}%`, width: `${Math.max(1.2, pct(Date.parse(s.end)) - pct(Date.parse(s.start)))}%`, background: "var(--green, #04ce78)" }} />
+        ))}
+      </div>
+      <div className="row" style={{ justifyContent: "space-between", fontSize: 12 }}>
+        {[0, 0.25, 0.5, 0.75, 1].map((f) => (
+          <span key={f} className="muted">{f === 0 ? "nu" : hhmm(new Date(t0 + f * span).toISOString())}</span>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+const SMART_DAYS = ["Mån", "Tis", "Ons", "Tors", "Fre", "Lör", "Sön"];
+
+/** Veckoschemat ("klar kl T med mål %") som smartstyrningen följer. En ändring här sparas hos smartstyrningen och slår igenom i dess egen app. */
+function SmartScheduleEditor({ index, s, actions }: { index: number; s: Smart; actions: Actions }) {
+  const [rows, setRows] = useState(s.schedule ?? []);
+  useEffect(() => setRows(s.schedule ?? []), [JSON.stringify(s.schedule)]);
+  const editable = Boolean(s.scheduleEntity);
+  const save = (day: number, patch: Partial<NonNullable<Smart["schedule"]>[number]>) => {
+    const next = rows.map((r) => (r.day === day ? { ...r, ...patch } : r));
+    setRows(next);
+    const r = next.find((x) => x.day === day)!;
+    actions.run(`Laddschema ${SMART_DAYS[day]}`, () => api.carSchedule(index, r), { done: `Laddschema ${SMART_DAYS[day]} sparat`, check: (d) => { const x = d.cars[index]?.smart?.schedule?.find((y) => y.day === day); return !!x && x.time === r.time && x.soc === r.soc && x.enabled === r.enabled; }, slow: "Skickat – smartstyrningen sparar det inom några sekunder." });
+  };
+  if (rows.length === 0) return null;
+  return (
+    <details>
+      <summary className="muted" style={{ cursor: "pointer", fontWeight: 600 }}>
+        Laddschema (klar kl) {editable ? "" : "· bara läsning"}
+      </summary>
+      <div className="stack" style={{ gap: 0, marginTop: 6 }}>
+        {rows.map((r) => (
+          <div key={r.day} className="row gap" style={{ padding: "6px 0", borderBottom: "1px solid var(--card-border)", alignItems: "center" }}>
+            <b style={{ width: 38 }}>{SMART_DAYS[r.day]}</b>
+            <button className={`btn small ${r.enabled ? "selected" : ""}`} aria-pressed={r.enabled} disabled={!editable} onClick={() => save(r.day, { enabled: !r.enabled })}>
+              {r.enabled ? "På" : "Av"}
+            </button>
+            <input type="time" value={r.time} disabled={!editable || !r.enabled} onChange={(e) => e.target.value && save(r.day, { time: e.target.value })} style={{ minWidth: 0 }} aria-label={`${SMART_DAYS[r.day]} klar kl`} />
+            <select value={r.soc} disabled={!editable || !r.enabled} onChange={(e) => save(r.day, { soc: Number(e.target.value) })} aria-label={`${SMART_DAYS[r.day]} mål`}>
+              {Array.from(new Set([...[20, 30, 40, 50, 60, 70, 80, 90, 100], r.soc])).sort((a, b) => a - b).map((v) => (
+                <option key={v} value={v}>
+                  {v} %
+                </option>
+              ))}
+            </select>
+          </div>
+        ))}
+      </div>
+    </details>
+  );
+}
+
+/** Smartstyrd laddning: planen och laddläget (Auto / Ladda nu / Pausa) från bilens smartstyrning i Home Assistant. Laddknappen ger samma överstyrning som smartstyrningens egen app. */
+function SmartChargingCard({ index, car, actions }: { index: number; car: Dashboard["cars"][number]; actions: Actions }) {
+  const s = car.smart;
+  if (!s) return null;
+  const upcoming = s.slots.filter((x) => Date.parse(x.end) > Date.now()).slice(0, 10);
+  const maxKwh = Math.max(0.1, ...upcoming.map((x) => ((x.kw ?? 0) * (Date.parse(x.end) - Date.parse(x.start))) / 3_600_000));
+  const now = s.nowOption && s.mode === s.nowOption;
+  const choose = (option: string, label: string) =>
+    actions.run(label, () => api.carMode(index, option), { done: `${label}: klart`, check: (d) => d.cars[index]?.smart?.mode === option, slow: "Skickat – smartstyrningen kan ta en halv minut på sig." });
+  const big = now ? s.pauseOption ?? s.autoOption : s.nowOption;
+  return (
+    <section className="card">
+      <div className="card-head">
+        <h2>Laddning</h2>
+        <span className={`chip ${car.charging ? "good" : ""}`}>{s.state || (car.charging ? "Laddar" : "Ingen plan")}</span>
+      </div>
+      {s.modeEntity && big && (
+        <button className={`big-btn ${now ? "" : "amber"}`} onClick={() => choose(big, now ? "Stoppa laddning" : "Starta laddning")}>
+          {now ? "Stoppa laddning" : "Starta laddning"}
+        </button>
+      )}
+      {s.modeEntity && s.options.length > 0 && (
+        <div className="grid-2" style={{ gridTemplateColumns: `repeat(${Math.min(s.options.length, 3)}, minmax(0, 1fr))` }}>
+          {s.options.map((o) => (
+            <button key={o} className={`btn ${o === s.mode ? "selected" : ""}`} aria-pressed={o === s.mode} onClick={() => o !== s.mode && choose(o, o)}>
+              {o}
+            </button>
+          ))}
+        </div>
+      )}
+      <PlanBar slots={s.slots} />
+      {upcoming.length > 0 ? (
+        <div className="stack plan-rows" style={{ gap: 0 }}>
+          {upcoming.map((x, i) => {
+            const kwh = ((x.kw ?? 0) * (Date.parse(x.end) - Date.parse(x.start))) / 3_600_000;
+            const showDay = i === 0 || dayName(x.start) !== dayName(upcoming[i - 1].start);
+            return (
+              <div key={x.start} className="plan-row">
+                <span className="plan-time">
+                  <b>{hhmm(x.start)}–{hhmm(x.end)}</b>
+                  <small className="muted">{showDay ? dayName(x.start) : "\u00a0"}</small>
+                </span>
+                <span className="plan-bar" aria-hidden="true"><i style={{ width: `${Math.max(6, Math.round((kwh / maxKwh) * 100))}%` }} /></span>
+                <span className="plan-num">
+                  <b>{x.socStart !== undefined ? `${x.socStart} → ${x.socEnd} %` : kwh > 0 ? `${kwh.toLocaleString("sv-SE", { maximumFractionDigits: 1 })} kWh` : ""}</b>
+                  <small className="muted">{x.kw !== null ? `${x.kw.toLocaleString("sv-SE")} kW` : ""}</small>
+                </span>
+              </div>
+            );
+          })}
+          {s.morning && (
+            <p className={`plan-floor ${s.morning.ok ? "ok" : "warn"}`}>
+              <Icon name={s.morning.ok ? "check" : "alert"} size={14} /> {s.morning.soc} % kl {s.morning.time}
+              {s.morning.ok ? ` (golv ${s.morning.min} %)` : ` – under golvet ${s.morning.min} %`}
+            </p>
+          )}
+          <p className="muted" style={{ marginTop: 8 }}>
+            {s.plannedKwh !== null ? `${s.plannedKwh.toLocaleString("sv-SE")} kWh planerat` : ""}
+            {s.socAfter !== null ? ` · ${s.socAfter} % efter planen` : ""}
+            {s.source ? ` · ${s.source}` : ""}
+          </p>
+        </div>
+      ) : (
+        <p className="muted">Ingen laddning planerad just nu.</p>
+      )}
+      <SmartScheduleEditor index={index} s={s} actions={actions} />
+    </section>
   );
 }
 
@@ -282,7 +456,7 @@ function ChargingCard({ index, charging, actions }: { index: number; charging: b
       )}
       {!target && <p className="muted">Bilen går inte att starta härifrån – integrationen saknar laddknapp.</p>}
       {c.schedule.length > 0 && (
-        <div className="stack" style={{ gap: 0 }}>
+        <div className="stack car-sched" style={{ gap: 0 }}>
           <h3 className="muted" style={{ fontSize: 14, textTransform: "uppercase", letterSpacing: "0.06em" }}>
             Laddschema i bilen
           </h3>
@@ -298,15 +472,358 @@ function ChargingCard({ index, charging, actions }: { index: number; charging: b
   );
 }
 
+/** Elpris per timme med en rad per bil som visar när den laddar, på samma tidsaxel. */
+function PlanPriceChart({ data, selected }: { data: Dashboard; selected: number }) {
+  const prices = data.prices;
+  if (!prices || prices.bars.length === 0) return null;
+  const H = 3_600_000;
+  const now = new Date();
+  const t0 = new Date(now.getFullYear(), now.getMonth(), now.getDate(), now.getHours()).getTime();
+  const span = prices.bars.length * H;
+  const fmt = (n: number) => n.toFixed(2).replace(".", ",");
+  const max = Math.max(...prices.bars.map((b) => b.price), 0.01);
+  const low = [...prices.bars.map((b) => b.price)].sort((x, y) => x - y)[Math.floor(prices.bars.length / 3)] ?? 0;
+  const colors = ["var(--accent)", "var(--blue)", "var(--warn, #f59e0b)"];
+  const lanes = data.cars
+    .map((c, i) => ({ c, i }))
+    .filter(({ c }) => c.smart);
+  // Solprognos per stapel (W); samma för alla bilar eftersom den gäller huset.
+  const fc = data.cars.find((c) => c.smart?.solarForecast)?.smart?.solarForecast ?? [];
+  const sun = prices.bars.map((_, i) => fc.find((f) => Math.abs(Date.parse(f.start) - (t0 + i * H)) < H / 2)?.w ?? 0);
+  const sunMax = Math.max(...sun, 1);
+  const SUN_MIN = 2500;   // ca 2,5 kW sol ger över 1,4 kW överskott efter husets last
+  let a = -1, b = -1;
+  for (let k = 0; k < sun.length; k++) {
+    if (sun[k] >= SUN_MIN) { if (a < 0) a = k; b = k; } else if (a >= 0) break;
+  }
+  const sunText = a >= 0 ? `sol ca ${prices.bars[a].hour}–${String((Number(prices.bars[b].hour) + 1) % 24).padStart(2, "0")}` : null;
+  return (
+    <section className="card strong plan-chart">
+      <div className="card-head">
+        <h2>Elpris och laddning</h2>
+        <span className={`chip ${prices.level === "dyrt" ? "danger" : prices.level === "billigt" ? "good" : ""}`}>{prices.level}</span>
+      </div>
+      <div className="row gap" style={{ alignItems: "baseline" }}>
+        <span className="muted">Nu</span>
+        <span className="big-num">
+          <AnimatedNumber value={prices.now} decimals={2} />
+          <small>kr/kWh{prices.kind === "spot" ? " spot" : ""}</small>
+        </span>
+      </div>
+      <div className="pc-wrap">
+      {sun.some((w) => w > 0) && (
+        <div className="pc-grid pc-sun" aria-hidden="true">
+          {sun.map((w, i) => (
+            <span key={i}><i style={{ height: `${Math.round((w / sunMax) * 100)}%` }} /></span>
+          ))}
+        </div>
+      )}
+      <div className="pc-grid" role="img" aria-label={`Elpris och laddplan kommande ${prices.bars.length} timmar`}>
+        {prices.bars.map((b, i) => (
+          <span key={i} title={`${b.hour}:00 ${fmt(b.price)} kr`}>
+            <i className={b.current ? "current" : b.price <= low ? "cheap" : ""} style={{ height: `${Math.max(6, Math.round((b.price / max) * 100))}%` }} />
+          </span>
+        ))}
+      </div>
+      </div>
+      <div className="pc-lanes">
+        {lanes.map(({ c, i }) => {
+          const slots = (c.smart?.slots ?? []).filter((x) => Date.parse(x.end) > t0 && Date.parse(x.start) < t0 + span);
+          const pct = (t: number) => Math.max(0, Math.min(100, ((t - t0) / span) * 100));
+          const first = slots[0], last = slots[slots.length - 1];
+          const label = !slots.length ? (c.battery !== null && c.battery >= 98 ? "fulladdad" : sunText ? `${sunText} (solladdning)` : "ingen laddning planerad") : `${hhmm(first.start)}–${hhmm(last.end)}${first.socStart !== undefined && last.socEnd !== undefined ? ` · ${first.socStart} → ${last.socEnd} %` : ""}`;
+          return (
+            <div key={c.name} className={`pc-lane ${i === selected ? "sel" : ""}`}>
+              <b style={{ color: colors[i % colors.length] }}>{c.name.split(" ")[0]}</b>
+              <span className="pc-track" aria-hidden="true">
+                {slots.map((x) => (
+                  <i key={x.start} title={`${hhmm(x.start)}–${hhmm(x.end)}`} style={{ left: `${pct(Date.parse(x.start))}%`, width: `${Math.max(1.2, pct(Date.parse(x.end)) - pct(Date.parse(x.start)))}%`, background: colors[i % colors.length] }} />
+                ))}
+              </span>
+              <small className="muted">{label}</small>
+            </div>
+          );
+        })}
+      </div>
+      <div className="pc-axis">
+        {prices.bars.map((b, i) => (
+          <span key={i}>{i % 4 === 0 ? b.hour : ""}</span>
+        ))}
+      </div>
+      {prices.cheapest && (
+        <b style={{ color: "var(--accent)", fontSize: 15 }}>
+          Billigast {prices.cheapest.from}–{prices.cheapest.to} · {fmt(prices.cheapest.avg)} kr
+        </b>
+      )}
+    </section>
+  );
+}
+
+// ---------- Charging plan (own schedule in HA, chargers, existing automations) ----------
+
+/** [1,2,3,4,5] → "Mån–Fre", [6,7] → "Lör Sön". */
+function daysText(days: number[]): string {
+  if (days.length === 7) return "Alla dagar";
+  const d = [...days].sort((a, b) => a - b);
+  const run = d.every((x, i) => i === 0 || x === d[i - 1] + 1);
+  return run && d.length >= 3 ? `${DAYS[d[0] - 1]}–${DAYS[d[d.length - 1] - 1]}` : d.map((x) => DAYS[x - 1]).join(" ");
+}
+const nextText = (iso?: string) =>
+  iso ? new Date(iso).toLocaleString("sv-SE", { weekday: "short", hour: "2-digit", minute: "2-digit" }) : "";
+const ruleText = (r: ChargeRule) => (r.from === r.to ? `Hela dygnet` : `${r.from}–${r.to}`);
+
+function DayPicker({ days, onChange }: { days: number[]; onChange: (d: number[]) => void }) {
+  return (
+    <div className="row gap wrap">
+      {DAYS.map((d, i) => (
+        <button
+          key={d}
+          className={`btn small ${days.includes(i + 1) ? "selected" : ""}`}
+          aria-pressed={days.includes(i + 1)}
+          onClick={() => onChange(days.includes(i + 1) ? days.filter((y) => y !== i + 1) : [...days, i + 1].sort())}
+        >
+          {d}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function ChargePlanCard({ index, car, refreshKey, actions }: { index: number; car: Dashboard["cars"][number]; refreshKey: string; actions: Actions }) {
+  const [info, setInfo] = useState<CarCharging | null>(null);
+  const [error, setError] = useState("");
+  const [rules, setRules] = useState<ChargeRule[] | null>(null);
+  const [target, setTarget] = useState("");
+  const [limit, setLimit] = useState("");
+  const load = () =>
+    api
+      .chargePlan(index)
+      .then((i) => {
+        setInfo(i);
+        setError("");
+      })
+      .catch((e: Error) => setError(e.message));
+  useEffect(() => {
+    load();
+  }, [index, refreshKey]);
+  const run = (label: string, fn: () => Promise<unknown>) =>
+    actions.run(label, async () => {
+      await fn();
+      await load();
+    });
+  const send = (entityId: string) => (op: ControlOp, value?: string | number) => api.chargePlanSet(index, entityId, op, value).then(load);
+
+  if (error || !info) {
+    return (
+      <section className="card">
+        <div className="card-head">
+          <h2>Laddschema</h2>
+        </div>
+        <p className="muted">{error || "Hämtar laddschema från Home Assistant…"}</p>
+      </section>
+    );
+  }
+
+  const own = info.own;
+  const startEdit = () => {
+    setRules(own?.rules.length ? own.rules : [{ days: [1, 2, 3, 4, 5], from: "22:00", to: "06:00" }]);
+    setTarget(own?.target ?? info.targetOptions[0]?.entityId ?? "");
+    setLimit(own?.limit !== undefined ? String(own.limit) : "");
+  };
+  // Nothing to show or create: the "Laddning" card already says what the car offers.
+  if (!info.canCreate && !info.limit && !info.settings.length && !info.existing.length && !own) return null;
+
+  return (
+    <section className="card">
+      <div className="card-head">
+        <h2>Laddschema</h2>
+      </div>
+      {info.limit && <ControlView c={{ ...info.limit, name: "Laddgräns" }} actions={actions} send={send(info.limit.entityId)} />}
+
+      {/* The board's own plan: a schedule helper + automation that live in HA */}
+      {rules ? (
+        <div className="stack">
+          <b>Tider</b>
+          {rules.map((r, i) => (
+            <div className="stack" key={i} style={{ gap: 8, paddingBottom: 10, borderBottom: "1px solid var(--card-border)" }}>
+              <DayPicker days={r.days} onChange={(days) => setRules(rules.map((x, j) => (j === i ? { ...x, days } : x)))} />
+              <div className="row gap">
+                <label className="field grow">
+                  <span>Från</span>
+                  <input type="time" value={r.from} onChange={(e) => setRules(rules.map((x, j) => (j === i ? { ...x, from: e.target.value } : x)))} />
+                </label>
+                <label className="field grow">
+                  <span>Till</span>
+                  <input type="time" value={r.to} onChange={(e) => setRules(rules.map((x, j) => (j === i ? { ...x, to: e.target.value } : x)))} />
+                </label>
+                {rules.length > 1 && (
+                  <button className="btn small ghost" style={{ alignSelf: "flex-end" }} aria-label="Ta bort tid" onClick={() => setRules(rules.filter((_, j) => j !== i))}>
+                    <Icon name="x" size={18} />
+                  </button>
+                )}
+              </div>
+            </div>
+          ))}
+          <button className="btn small" onClick={() => setRules([...rules, { days: [6, 7], from: "22:00", to: "06:00" }])}>
+            <Icon name="plus" size={18} /> Lägg till tid
+          </button>
+          {info.targetOptions.length > 1 && (
+            <label className="field">
+              <span>Styr laddningen med</span>
+              <select value={target} onChange={(e) => setTarget(e.target.value)}>
+                {info.targetOptions.map((t) => (
+                  <option key={t.entityId} value={t.entityId}>
+                    {t.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
+          {info.limit && (
+            <label className="field">
+              <span>Ladda till (%) när schemat startar</span>
+              <input type="number" min={10} max={100} step={5} placeholder="Ändra inte" value={limit} onChange={(e) => setLimit(e.target.value)} />
+            </label>
+          )}
+          <p className="muted">Schemat sparas i Home Assistant och fungerar även när tavlan är avstängd. Tider över midnatt går bra, t.ex. 22:00–06:00.</p>
+          <div className="row gap">
+            <button className="btn grow" onClick={() => setRules(null)}>
+              Avbryt
+            </button>
+            <button
+              className="btn primary grow"
+              disabled={!target || rules.some((r) => !r.days.length || !r.from || !r.to)}
+              onClick={() => {
+                const plan = { rules, target, limit: limit ? Number(limit) : undefined };
+                setRules(null);
+                run("Laddschema", () => api.saveChargePlan(index, plan));
+              }}
+            >
+              Spara
+            </button>
+          </div>
+        </div>
+      ) : own ? (
+        <div className="stack" style={{ gap: 8 }}>
+          <div className="row gap">
+            <b className="grow">Eget schema i Home Assistant</b>
+            {own.automationEntity && (
+              <label className="switch" aria-label="Laddschema på/av">
+                <input type="checkbox" checked={own.enabled} onChange={() => run("Laddschema", () => api.chargePlanSet(index, own.automationEntity!, own.enabled ? "off" : "on"))} />
+                <span />
+              </label>
+            )}
+          </div>
+          {own.rules.map((r, i) => (
+            <div className="item-row" key={i}>
+              <b className="tabular" style={{ fontSize: 20 }}>
+                {ruleText(r)}
+              </b>
+              <span className="grow muted">{daysText(r.days)}</span>
+            </div>
+          ))}
+          <div className="chips">
+            {own.active && own.enabled && <span className="chip good">Laddfönster nu</span>}
+            {!own.active && own.next && own.enabled && <span className="chip">Nästa: {nextText(own.next)}</span>}
+            {own.limit !== undefined && <span className="chip">Till {own.limit} %</span>}
+            {!own.enabled && <span className="chip warn">Avstängt</span>}
+            {own.missingAutomation && <span className="chip warn">Automationen saknas – tryck Ändra och Spara</span>}
+          </div>
+          <div className="row gap">
+            <button className="btn grow" onClick={startEdit}>
+              Ändra
+            </button>
+            <button className="btn ghost" onClick={() => actions.confirm(`Ta bort laddschemat för ${car.name}?`, "Laddschema", async () => { await api.deleteChargePlan(index); await load(); })}>
+              Ta bort
+            </button>
+          </div>
+        </div>
+      ) : (
+        info.canCreate && (
+          <button className="btn" onClick={startEdit}>
+            <Icon name="plus" size={20} /> {info.existing.length || info.settings.length ? "Gör ett eget laddschema" : "Lägg till laddschema"}
+          </button>
+        )
+      )}
+
+      {/* What already exists in HA */}
+      {(info.existing.length > 0 || info.settings.length > 0) && (
+        <div className="stack" style={{ gap: 8 }}>
+          <b>Finns i Home Assistant</b>
+          {info.existing.map((e) => (
+            <div className="item-row" key={e.entityId}>
+              {e.domain === "automation" ? (
+                <label className="switch" aria-label={`${e.name} på/av`}>
+                  <input type="checkbox" checked={e.on} onChange={() => run(e.name, () => api.chargePlanSet(index, e.entityId, e.on ? "off" : "on"))} />
+                  <span />
+                </label>
+              ) : (
+                <span className={`chip ${e.on ? "good" : ""}`}>{e.on ? "På" : "Av"}</span>
+              )}
+              <span className="grow">{e.name}</span>
+              <span className="muted">{e.domain === "automation" ? "Automation" : e.next ? `Nästa ${nextText(e.next)}` : "Schema"}</span>
+            </div>
+          ))}
+          {info.settings.map((c) => (
+            <ControlView key={c.entityId} c={c} actions={actions} send={send(c.entityId)} />
+          ))}
+        </div>
+      )}
+    </section>
+  );
+}
+
+/** One car as a column: battery, charging, heat start. Used when several cars sit side by side. */
+function CarColumn({ data, car, actions }: { data: Dashboard; car: Dashboard["cars"][number]; actions: Actions }) {
+  const [details, setDetails] = useState(false);
+  const index = data.cars.indexOf(car);
+  return (
+    <div className="car-col">
+      <section className="card car-head">
+        <Ring progress={(car.battery ?? 0) / 100} size={72} stroke={8}>
+          <b style={{ fontSize: 20, fontWeight: 800, lineHeight: 1 }}>{car.battery ?? "–"}</b>
+        </Ring>
+        <div className="car-head-text">
+          <b>{car.name}</b>
+          <span className="chips">
+            {car.home !== null && <span className="chip">{car.home ? "Hemma" : "Borta"}</span>}
+            {car.rangeKm !== null && <span className="chip">{Math.round(car.rangeKm)} km</span>}
+            {car.charging && <span className="chip good">Laddar</span>}
+            {car.ageHours !== null && car.ageHours >= 3 && <span className="chip warn">{car.ageHours} h gammal</span>}
+          </span>
+        </div>
+        <button className="btn small ghost" onClick={() => setDetails(true)}>
+          Alla data
+        </button>
+      </section>
+      {car.smart ? <SmartChargingCard index={index} car={car} actions={actions} /> : <ChargingCard index={index} charging={Boolean(car.charging)} actions={actions} />}
+      {!car.smart && <ChargePlanCard index={index} car={car} refreshKey={data.generatedAt} actions={actions} />}
+      <ScheduleEditor car={car} actions={actions} />
+      {details && <CarDetailsSheet index={index} onClose={() => setDetails(false)} actions={actions} />}
+    </div>
+  );
+}
 const STATE_SV: Record<string, string> = { locked: "låst", unlocked: "olåst", on: "på", off: "av", open: "öppen", closed: "stängd" };
 const fuelCar = (c: Dashboard["cars"][number]) => c.battery === null && c.fuelPct !== null;
 const carLevelText = (c: Dashboard["cars"][number]) => (fuelCar(c) && c.fuelLiters !== null ? `${c.fuelLiters} L` : `${carLevel(c) ?? "–"} %`);
 
 export function CarsPage({ data, actions }: { data: Dashboard; actions: Actions }) {
+  const flat = useDesign(data.design) === "flat";
   const [sel, setSel] = useState(0);
   const [details, setDetails] = useState(false);
   const car = data.cars[Math.min(sel, data.cars.length - 1)];
   if (!car) return null;
+  if (flat && data.cars.length > 1)
+    return (
+      <main className="cars-flat">
+        <div className="cars-cols" style={{ gridTemplateColumns: `repeat(${data.cars.length}, minmax(0, 1fr))` }}>
+          {data.cars.map((c) => (
+            <CarColumn key={c.name} data={data} car={c} actions={actions} />
+          ))}
+        </div>
+        {data.cars.some((c) => c.smart) ? <PlanPriceChart data={data} selected={0} /> : data.prices && <PriceCard prices={data.prices} />}
+      </main>
+    );
   return (
     <main className="stack" style={{ gap: 18 }}>
       {data.cars.length > 1 && (
@@ -318,17 +835,18 @@ export function CarsPage({ data, actions }: { data: Dashboard; actions: Actions 
           ))}
         </div>
       )}
-      <div className="page-grid">
+      <div className="page-grid even">
         <section className="card strong" style={{ alignItems: "center" }}>
           <div className="row gap">
-            <span className="muted">{car.name}</span>
+            {/* With several cars the picker above already says which one: no second title with the same name and percent. */}
+            <span className="muted">{data.cars.length > 1 ? "Batteri" : car.name}</span>
             <button className="btn small ghost" style={{ color: "var(--blue)" }} onClick={() => setDetails(true)}>
               Alla data
             </button>
           </div>
           <div className="car-ring">
-            <Ring progress={(carLevel(car) ?? 0) / 100} size={170} stroke={12}>
-              <b style={{ fontSize: 48, fontWeight: 800, lineHeight: 1 }}>
+            <Ring progress={(carLevel(car) ?? 0) / 100} size={140} stroke={11}>
+              <b style={{ fontSize: 40, fontWeight: 800, lineHeight: 1 }}>
                 {fuelCar(car) && car.fuelLiters !== null ? car.fuelLiters : (carLevel(car) ?? "–")}
                 <small style={{ fontSize: 18 }}>{fuelCar(car) && car.fuelLiters !== null ? " L" : "%"}</small>
               </b>
@@ -342,9 +860,10 @@ export function CarsPage({ data, actions }: { data: Dashboard; actions: Actions 
             {car.ageHours !== null && car.ageHours >= 3 && <span className="chip warn">Data {car.ageHours} h gammal</span>}
           </div>
         </section>
-        <ChargingCard index={data.cars.indexOf(car)} charging={Boolean(car.charging)} actions={actions} />
+        {car.smart ? <SmartChargingCard index={data.cars.indexOf(car)} car={car} actions={actions} /> : <ChargingCard index={data.cars.indexOf(car)} charging={Boolean(car.charging)} actions={actions} />}
+        {!car.smart && <ChargePlanCard index={data.cars.indexOf(car)} car={car} refreshKey={data.generatedAt} actions={actions} />}
         <ScheduleEditor car={car} actions={actions} />
-        {data.prices && <PriceCard prices={data.prices} />}
+        {data.cars.some((c) => c.smart) ? <PlanPriceChart data={data} selected={Math.min(sel, data.cars.length - 1)} /> : data.prices && <PriceCard prices={data.prices} />}
       </div>
       {details && <CarDetailsSheet index={data.cars.indexOf(car)} onClose={() => setDetails(false)} actions={actions} />}
     </main>
@@ -409,25 +928,48 @@ function LampRow({ lamp, actions }: { lamp: Lamp; actions: Actions }) {
 }
 
 export function LightsPage({ data, actions }: { data: Dashboard; actions: Actions }) {
+  const flat = useDesign(data.design) === "flat";
+  // In the new design a lamp that already sits in a group is not listed a second time.
+  const grouped = new Set(data.lightGroups.flatMap((g) => g.lamps.map((l) => l.entityId)));
+  const groupNames = new Set(data.lightGroups.map((g) => g.name.toLowerCase()));
+  const lights = flat ? data.lights.filter((l) => !grouped.has(l.entityId) && !groupNames.has(l.name.toLowerCase()) && !l.offline) : data.lights;
+  const inside = insideGroups(data);
+  const outside = outsideGroups(data);
   return (
-    <main className="page-grid">
-      {data.buttons.length > 0 && (
-        <section className="card">
-          <h2>Snabbval</h2>
-          <div className="big-buttons">
-            {data.buttons.map((b) => (
-              <button key={b.entityId} className={`big-btn wide ${b.style}`} onClick={() => actions.run(b.name, () => api.button(b.entityId))}>
-                {b.name}
+    <main className="page-grid lights-page">
+      {flat && (inside.length > 0 || outside.length > 0) && (
+        <div className="lights-top">
+          {inside.length > 0 && (
+            <div className="lights-top-group">
+              <b>Inne</b>
+              <button className="btn primary" onClick={() => setGroups(actions, inside, true, "Tänd inne")}>
+                Tänd inne
               </button>
-            ))}
-          </div>
-        </section>
+              <button className="btn" onClick={() => setGroups(actions, inside, false, "Släck allt inne")}>
+                Släck allt inne
+              </button>
+            </div>
+          )}
+          {outside.length > 0 && (
+            <div className="lights-top-group">
+              <b>Ute</b>
+              <button className="btn primary" onClick={() => setGroups(actions, outside, true, "Tänd ute")}>
+                Tänd ute
+              </button>
+              <button className="btn" onClick={() => setGroups(actions, outside, false, "Släck ute")}>
+                Släck ute
+              </button>
+            </div>
+          )}
+        </div>
       )}
+      <QuickButtons data={data} actions={actions} place="lights" />
       {data.lightGroups.map((g) => (
-        <section className="card" key={g.index}>
+        <Hide key={g.index} k={`lightgroup:${g.name}`} label={g.name} data={data} actions={actions} card>
+        <section className="card">
           <h2>{g.name}</h2>
           <p className="muted">
-            {g.on} av {g.total} tända{g.offline.length ? ` · offline: ${g.offline.join(", ")}` : ""}
+            {g.on} av {g.total - g.offline.length} tända{g.offline.length ? <span className="lamp-off-note"> · offline: {g.offline.join(", ")}</span> : null}
           </p>
           <div className="big-buttons">
             <button
@@ -459,14 +1001,22 @@ export function LightsPage({ data, actions }: { data: Dashboard; actions: Action
           {g.lamps.length > 1 && (
             <div className="lamp-list">
               {g.lamps.map((l) => (
-                <LampRow key={l.entityId} lamp={l} actions={actions} />
+                <Hide key={l.entityId} k={l.entityId} label={l.name} data={data} actions={actions} block>
+                  <LampRow lamp={l} actions={actions} />
+                </Hide>
               ))}
             </div>
           )}
           {g.lamps.length === 1 && g.lamps[0].dimmable && <LampRow lamp={g.lamps[0]} actions={actions} />}
         </section>
+        </Hide>
       ))}
-      {data.lights.length > 0 && (
+      {flat && data.lights.length > 0 && lights.length === 0 && (
+        <button className="btn lights-all" onClick={() => actions.run("Släck allt", () => api.lightsOff(), { done: "Allt släckt", check: (d) => d.lights.every((l) => !l.on || l.offline) })}>
+          Släck allt
+        </button>
+      )}
+      {lights.length > 0 && (
         <section className="card">
           <div className="card-head">
             <h2>Lampor</h2>
@@ -475,8 +1025,10 @@ export function LightsPage({ data, actions }: { data: Dashboard; actions: Action
             </button>
           </div>
           <div className="lamp-list">
-            {data.lights.map((l) => (
-              <LampRow key={l.entityId} lamp={l} actions={actions} />
+            {lights.map((l) => (
+              <Hide key={l.entityId} k={l.entityId} label={l.name} data={data} actions={actions} block>
+                <LampRow lamp={l} actions={actions} />
+              </Hide>
             ))}
           </div>
         </section>
@@ -489,9 +1041,39 @@ export function LightsPage({ data, actions }: { data: Dashboard; actions: Action
 
 export function HousePage({ data, actions }: { data: Dashboard; actions: Actions }) {
   return (
-    <main className="page-grid">
+    <main className="page-grid even">
+      {(data.smartModes ?? []).length > 0 && (
+        <section className="card strong">
+          <span className="muted" style={{ fontWeight: 600 }}>
+            Smart styrning
+          </span>
+          {data.smartModes.map((m) => (
+            <Hide key={m.entityId} k={m.entityId} label={m.name} data={data} actions={actions} block>
+            <div className="stack" style={{ gap: 6 }}>
+              <span>{m.name}</span>
+              <div className="row gap wrap">
+                {m.options.map((o) => (
+                  <Hide key={o} k={`${m.entityId}#${o}`} label={`${m.name}: ${o}`} data={data} actions={actions}>
+                  <button
+                    key={o}
+                    className={`btn small ${m.mode === o ? "selected" : ""}`}
+                    aria-pressed={m.mode === o}
+                    title={/^auto/i.test(o) ? "Följer sitt eget schema, som Home Assistant styr" : undefined}
+                    onClick={() => m.mode !== o && actions.run(`${m.name}: ${o}`, () => api.control(m.entityId, "select", o), { done: `${m.name}: ${o}`, check: (d) => d.smartModes?.find((x) => x.entityId === m.entityId)?.mode === o })}
+                  >
+                    {o}
+                  </button>
+                  </Hide>
+                ))}
+              </div>
+            </div>
+            </Hide>
+          ))}
+        </section>
+      )}
       {data.climates.map((c) => (
-        <section className="card strong" key={c.entityId}>
+        <Hide key={c.entityId} k={c.entityId} label={c.name} data={data} actions={actions} card>
+        <section className="card strong">
           <span className="muted" style={{ fontWeight: 600 }}>
             {c.name}
           </span>
@@ -518,28 +1100,33 @@ export function HousePage({ data, actions }: { data: Dashboard; actions: Actions
           {c.modes.length > 0 && (
             <div className="row gap wrap">
               {c.modes.map((m) => (
+                <Hide key={m.value} k={`${c.entityId}#${m.value}`} label={m.label} data={data} actions={actions}>
                 <button
-                  key={m.value}
                   className={`btn small ${c.active === m.value ? "selected" : ""}`}
                   aria-pressed={c.active === m.value}
                   onClick={() => actions.confirm(`Byt ${c.name} till ${m.label}?`, c.name, () => api.climateMode(c.entityId, m.field, m.value))}
                 >
                   {m.label}
                 </button>
+                </Hide>
               ))}
             </div>
           )}
           {c.controls.length > 0 && (
             <div className="grid-2" style={{ gridTemplateColumns: "repeat(2, minmax(0, 1fr))" }}>
               {c.controls.map((ctl) => (
-                <ControlView key={ctl.entityId} c={ctl} actions={actions} />
+                <Hide key={ctl.entityId} k={ctl.entityId} label={shortControl(ctl.name, c.name)} data={data} actions={actions} block>
+                  <ControlView c={ctl} actions={actions} device={c.name} />
+                </Hide>
               ))}
             </div>
           )}
         </section>
+        </Hide>
       ))}
       {data.deviceCards.map((d) => (
-        <section className="card strong" key={d.index}>
+        <Hide key={d.index} k={`card:${d.title}`} label={d.title} data={data} actions={actions} card>
+        <section className="card strong">
           <span className="muted" style={{ fontWeight: 600 }}>
             {d.title}
           </span>
@@ -564,30 +1151,39 @@ export function HousePage({ data, actions }: { data: Dashboard; actions: Actions
           {d.controls.length > 0 && (
             <div className="stack">
               {d.controls.map((ctl) => (
-                <ControlView key={ctl.entityId} c={ctl} actions={actions} />
+                <Hide key={ctl.entityId} k={ctl.entityId} label={shortControl(ctl.name, d.title)} data={data} actions={actions} block>
+                  <ControlView c={ctl} actions={actions} device={d.title} />
+                </Hide>
               ))}
             </div>
           )}
         </section>
+        </Hide>
       ))}
       {data.temps.length > 0 && (
         <section className="card">
           <h2>Temperaturer</h2>
           <div className="stats">
             {data.temps.map((t) => (
-              <div key={t.name}>
-                <small>{t.name}</small>
-                <b>{t.value}</b>
-              </div>
+              <Hide key={t.name} k={`temp:${t.name}`} label={t.name} data={data} actions={actions} block>
+                <div>
+                  <small>{t.name}</small>
+                  <b>{t.value}</b>
+                </div>
+              </Hide>
             ))}
           </div>
         </section>
       )}
+      <QuickButtons data={data} actions={actions} place="house" />
     </main>
   );
 }
 
 // ---------- Energy ----------
+
+/** "Batteriet laddar" / "laddar ur" / "vilar" for a battery power where plus is discharge. */
+export const batteryText = (k: number) => (k < -0.005 ? "Batteriet laddar" : k > 0.005 ? "Batteriet laddar ur" : "Batteriet vilar");
 
 export function EnergyPage({ data }: { data: Dashboard }) {
   const e = data.energy;
@@ -595,7 +1191,7 @@ export function EnergyPage({ data }: { data: Dashboard }) {
   return (
     <main className="page-grid">
       {e && (e.solarKw !== undefined || e.gridKw !== undefined) && <PowerFlow e={e} price={data.prices?.now} spot={data.prices?.kind === "spot"} />}
-      {(e?.houseKw !== undefined || e?.batteryPct !== undefined) && (
+      {(e?.houseKw !== undefined || e?.batteryPct !== undefined || e?.batteryKw !== undefined) && (
         <section className="card">
           <div className="stats" style={{ gridTemplateColumns: "repeat(2, minmax(0, 1fr))" }}>
             {e?.houseKw !== undefined && (
@@ -614,6 +1210,12 @@ export function EnergyPage({ data }: { data: Dashboard }) {
               <div>
                 <small>Hembatteri</small>
                 <b className="big-num">{Math.round(e.batteryPct)} %</b>
+              </div>
+            )}
+            {e?.batteryKw !== undefined && (
+              <div>
+                <small>{batteryText(e.batteryKw)}</small>
+                <b className="big-num">{kw(Math.abs(e.batteryKw))}</b>
               </div>
             )}
           </div>
@@ -651,6 +1253,18 @@ export function EnergyPage({ data }: { data: Dashboard }) {
               <div>
                 <small>Egen solel</small>
                 <b>{fmtNum(e.today.selfUseKwh)} kWh</b>
+              </div>
+            )}
+            {e.today.batteryChargeKwh !== undefined && (
+              <div>
+                <small>Laddat i batteriet</small>
+                <b>{fmtNum(e.today.batteryChargeKwh)} kWh</b>
+              </div>
+            )}
+            {e.today.batteryDischargeKwh !== undefined && (
+              <div>
+                <small>Ur batteriet</small>
+                <b>{fmtNum(e.today.batteryDischargeKwh)} kWh</b>
               </div>
             )}
             {e.today.selfSufficiencyPct !== undefined && (
@@ -773,36 +1387,147 @@ function PowerFlow({ e, price, spot }: { e: NonNullable<Dashboard["energy"]>; pr
 
 // ---------- Graphs ----------
 
-function LineChart({ data }: { data: GraphData }) {
+/** Jämna skalvärden (…, 20, 25, 30 …) i stället för 14,6 och 2666,7. */
+function niceTicks(lo: number, hi: number, count: number): number[] {
+  const range = hi - lo || Math.abs(hi) || 1;
+  const rough = range / Math.max(1, count - 1);
+  const mag = 10 ** Math.floor(Math.log10(rough));
+  const step = [1, 2, 2.5, 5, 10].map((m) => m * mag).find((v) => v >= rough) ?? mag * 10;
+  const out: number[] = [];
+  for (let v = Math.floor(lo / step) * step; v <= hi + step * 0.001; v += step) out.push(Math.round(v / step) * step);
+  return out;
+}
+
+/**
+ * The day hour by hour, drawn like EnergyWizard's "Dygnet timme för timme" (Emil 2026-11-14): one step line per
+ * series over clock hours, a dashed "nu" at the right edge, and below it one row of hour blocks per series where a
+ * stronger colour means more. Touch or drag shows that hour's values.
+ */
+function HourChart({ data }: { data: GraphData }) {
   const W = 600;
-  const H = 180;
-  const all = data.series.flatMap((s) => s.points.filter((p): p is number => p !== null));
-  if (!all.length) return <p className="muted">Ingen historik ännu.</p>;
-  const min = Math.min(...all);
-  const max = Math.max(...all);
+  const H = 150;
+  const id = useId().replace(/:/g, "");
+  const [hover, setHover] = useState<number | null>(null);
+  const { hours, series } = hourBuckets(data);
+  const all = series.flat().filter((p): p is number => p !== null);
+  if (!all.length || !hours.length) return <p className="muted">Ingen historik ännu.</p>;
+  const n = hours.length;
+  const lo = Math.min(...all);
+  const hi = Math.max(...all);
+  const pad = (hi - lo || 1) * 0.1;
+  const min = lo - pad;
+  const max = hi + pad;
   const span = max - min || 1;
-  const n = Math.max(...data.series.map((s) => s.points.length));
-  const x = (i: number) => (i / Math.max(1, n - 1)) * W;
-  const y = (v: number) => H - 8 - ((v - min) / span) * (H - 16);
-  const path = (pts: (number | null)[]) =>
-    pts
-      .map((p, i) => (p === null ? null : `${i === 0 || pts[i - 1] === null ? "M" : "L"}${x(i).toFixed(1)},${y(p).toFixed(1)}`))
-      .filter(Boolean)
-      .join(" ");
-  const time = (iso: string) => new Date(iso).toLocaleTimeString("sv-SE", { hour: "2-digit", minute: "2-digit" });
+  const colW = W / n;
+  const y = (v: number) => H - 4 - ((v - min) / span) * (H - 8);
+  const ticks = niceTicks(lo, hi, 4).filter((t) => t >= min && t <= max);
+  const hourOf = (k: number) => new Date(hours[k]! * 3_600_000).getHours();
+  const label = (k: number) => String(hourOf(k)).padStart(2, "0");
+  const every = n > 16 ? 3 : n > 8 ? 2 : 1;
+  const at = (e: React.PointerEvent<HTMLDivElement>) => {
+    const r = e.currentTarget.getBoundingClientRect();
+    setHover(Math.max(0, Math.min(n - 1, Math.floor(((e.clientX - r.left) / r.width) * n))));
+  };
+  // Each series' own scale for the blocks: its lowest hour is faint, its highest is strong.
+  const strength = (si: number, v: number) => {
+    const vals = series[si]!.filter((p): p is number => p !== null);
+    const a = Math.min(...vals);
+    const b = Math.max(...vals);
+    return b - a < 1e-9 ? 0.5 : (v - a) / (b - a);
+  };
+  const step = (pts: (number | null)[]) => {
+    let line = "";
+    let area = "";
+    let run: string[] = [];
+    let runStart = 0;
+    const flush = (endK: number) => {
+      if (!run.length) return;
+      line += ` M${run.join(" L")}`;
+      area += ` M${(runStart * colW).toFixed(1)},${H} L${run.join(" L")} L${(endK * colW).toFixed(1)},${H} Z`;
+      run = [];
+    };
+    pts.forEach((v, k) => {
+      if (v === null) return flush(k);
+      if (!run.length) runStart = k;
+      run.push(`${(k * colW).toFixed(1)},${y(v).toFixed(1)}`, `${((k + 1) * colW).toFixed(1)},${y(v).toFixed(1)}`);
+    });
+    flush(n);
+    return { line, area };
+  };
+  const tipLeft = hover === null ? 0 : Math.min(70, Math.max(0, ((hover + 0.5) / n) * 100 - 12));
   return (
-    <div className="chart">
-      <svg viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none" role="img" aria-label={data.title}>
-        {data.series.map((s) => (
-          <path key={s.name} d={path(s.points)} fill="none" stroke={s.color} strokeWidth={2.5} vectorEffect="non-scaling-stroke" strokeLinejoin="round" />
-        ))}
-      </svg>
-      <div className="axis">
-        <span>{time(data.from)}</span>
-        <span>
-          min {fmtNum(min)} · max {fmtNum(max)}
-        </span>
-        <span>{time(data.to)}</span>
+    <div className="hour-chart">
+      <div className="hc-row">
+        <div className="hc-yaxis">
+          {ticks.map((t, k) => (
+            <span key={k} style={{ top: `${(y(t) / H) * 100}%` }}>
+              {fmtNum(t)}
+            </span>
+          ))}
+        </div>
+        <div className="hc-plot" onPointerMove={at} onPointerDown={at} onPointerLeave={() => setHover(null)} onPointerCancel={() => setHover(null)}>
+          <svg viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none" role="img" aria-label={`${data.title}, senaste dygnet timme för timme`}>
+            <defs>
+              {data.series.map((s, i) => (
+                <linearGradient key={s.name} id={`${id}-${i}`} x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0" stopColor={s.color} stopOpacity="0.22" />
+                  <stop offset="1" stopColor={s.color} stopOpacity="0" />
+                </linearGradient>
+              ))}
+            </defs>
+            {ticks.map((t, k) => (
+              <line key={k} x1="0" x2={W} y1={y(t)} y2={y(t)} stroke="currentColor" strokeOpacity="0.12" vectorEffect="non-scaling-stroke" />
+            ))}
+            {series.map((pts, i) => {
+              const { line, area } = step(pts);
+              const color = data.series[i]!.color;
+              return (
+                <g key={i}>
+                  <path d={area} fill={`url(#${id}-${i})`} stroke="none" />
+                  <path d={line} fill="none" stroke={color} strokeWidth={2.2} vectorEffect="non-scaling-stroke" strokeLinejoin="round" />
+                </g>
+              );
+            })}
+            {hover !== null && <rect x={hover * colW} y={0} width={colW} height={H} fill="currentColor" fillOpacity="0.07" />}
+            <line x1={W - colW / 2} x2={W - colW / 2} y1={0} y2={H} stroke="currentColor" strokeOpacity="0.45" strokeDasharray="4 4" vectorEffect="non-scaling-stroke" />
+          </svg>
+          <span className="hc-now" style={{ left: `${((n - 0.5) / n) * 100}%` }}>
+            nu
+          </span>
+          {hover !== null && (
+            <div className="chart-tip" style={{ left: `${tipLeft}%` }}>
+              <b>
+                {label(hover)}:00{hover === n - 1 ? " · nu" : ""}
+              </b>
+              {data.series.map((s, i) => (
+                <span key={s.name}>
+                  <i style={{ background: s.color }} />
+                  {s.name} {series[i]![hover] === null ? "–" : fmtNum(Math.round(series[i]![hover]! * 10) / 10)}
+                </span>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+      {data.series.map((s, i) => series[i]!.every((v) => v === null) ? null : (
+        <div className="hc-row hc-lane" key={s.name}>
+          <span className="hc-name" title={s.name}>
+            {s.name}
+          </span>
+          <div className="hc-cells" style={{ gridTemplateColumns: `repeat(${n}, 1fr)` }}>
+            {series[i]!.map((v, k) => (
+              <i key={k} className={hover === k ? "on" : ""} style={v === null ? undefined : { background: s.color, opacity: 0.14 + 0.8 * strength(i, v) }} />
+            ))}
+          </div>
+        </div>
+      ))}
+      <div className="hc-row">
+        <span />
+        <div className="hc-hours" style={{ gridTemplateColumns: `repeat(${n}, 1fr)` }}>
+          {hours.map((_, k) => (
+            <span key={k}>{k % every === 0 || k === n - 1 ? label(k) : ""}</span>
+          ))}
+        </div>
       </div>
     </div>
   );
@@ -817,42 +1542,45 @@ function GraphCard({ index }: { index: number }) {
       .then(setData)
       .catch((e: Error) => setError(e.message));
   }, [index]);
+  // A graph without any series has nothing to show: no empty card.
+  if (data && !data.series.some((s) => s.points.some((p) => p !== null))) return null;
   return (
     <section className="card">
       <div className="card-head">
         <h2>{data?.title ?? "Graf"}</h2>
-        <span className="muted tabular">
-          {data?.series
-            .map((s) => {
-              const last = [...s.points].reverse().find((p) => p !== null);
-              return last === undefined ? "–" : fmtNum(last);
-            })
-            .join(" · ")}
-        </span>
       </div>
+      {!data && !error && <p className="muted">Hämtar…</p>}
       {data && (
-        <div className="legend">
-          {data.series.map((s) => (
-            <span key={s.name}>
-              <span className="dot" style={{ background: s.color, width: 16, height: 4 }} />
-              {s.name}
-            </span>
-          ))}
+        <div className="graph-chips">
+          {data.series.map((s) => {
+            const last = [...s.points].reverse().find((p) => p !== null);
+            return (
+              <span key={s.name} className="graph-chip">
+                <span className="dot" style={{ background: s.color }} />
+                {s.name}
+                <b className="tabular">{last === undefined ? "–" : fmtNum(last)}</b>
+              </span>
+            );
+          })}
         </div>
       )}
       {error && <p className="error-text">{error}</p>}
-      {data && <LineChart data={data} />}
+      {data && <HourChart data={data} />}
     </section>
   );
 }
 
-export function GraphsPage({ data }: { data: Dashboard }) {
+export function GraphsPage({ data, actions }: { data: Dashboard; actions: Actions }) {
+  // The new design shows the electricity price once (on Energi), not on every page that can.
+  const flat = useDesign(data.design) === "flat";
   return (
     <main className="page-grid">
       {data.graphs.map((g) => (
-        <GraphCard key={g.index} index={g.index} />
+        <Hide key={g.index} k={`graph:${g.title}`} label={g.title} data={data} actions={actions} block>
+          <GraphCard index={g.index} />
+        </Hide>
       ))}
-      {data.prices && <PriceCard prices={data.prices} />}
+      {data.prices && !(flat && data.energy) && <PriceCard prices={data.prices} />}
     </main>
   );
 }

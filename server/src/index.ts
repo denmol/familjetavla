@@ -3,9 +3,11 @@ import Fastify, { LogController } from "fastify";
 import { existsSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { startHttps } from "./https.js";
 import { haConnection } from "./connectors/ha.js";
 import { initHaSocket } from "./connectors/haws.js";
 import { startNotifier } from "./notify.js";
+import { checkOwnPort } from "./portguard.js";
 import { startPublisher } from "./publisher.js";
 import { registerRoutes } from "./routes.js";
 import { startScheduler } from "./scheduler.js";
@@ -46,6 +48,9 @@ if (existsSync(webDist)) {
 }
 
 await app.listen({ host: "0.0.0.0", port });
+const httpsServer = await startHttps(app, app.log);
+// Verifies that localhost actually reaches us – see portguard.ts for why it can silently not.
+await checkOwnPort(port, app.log);
 startScheduler(app.log);
 startPublisher(app.log);
 startNotifier(app.log);
@@ -55,6 +60,7 @@ for (const sig of ["SIGTERM", "SIGINT"] as const) {
   process.once(sig, () => {
     app.log.info(`${sig} – stänger av`);
     socket.stop();
+    httpsServer?.close();
     const force = setTimeout(() => process.exit(0), 3000);
     force.unref();
     void app.close().finally(() => process.exit(0));

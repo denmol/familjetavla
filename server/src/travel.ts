@@ -60,7 +60,10 @@ export function resolveTravel(ev: SourcedEvent, people: Map<string, Person>, cal
 /** "Emil skjutsar dit · buss hem" for reminders and the Nu-zon. */
 export function travelSummary(t: DashTravel | undefined): string {
   if (!t || (!t.to && !t.home)) return "";
-  if (t.kind === "care") return [t.to && `${t.to.label} lämnar`, t.home && `${t.home.label} hämtar`].filter(Boolean).join(" · ");
+  if (t.kind === "care")
+    return [t.to && (t.to.mode === "self" ? "Går själv dit" : `${t.to.label} lämnar`), t.home && (t.home.mode === "self" ? "Går hem själv" : `${t.home.label} hämtar`)]
+      .filter(Boolean)
+      .join(" · ");
   if (t.to && t.home && t.to.label === t.home.label) return `${t.to.label} dit och hem`;
   return [t.to && `${t.to.label} dit`, t.home && `${lower(t.home.label)} hem`].filter(Boolean).join(" · ").replace(/^./, (c) => c.toUpperCase());
 }

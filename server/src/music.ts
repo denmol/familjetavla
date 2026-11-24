@@ -1,5 +1,6 @@
 import type { HaState } from "./connectors/ha.js";
 import { getJson } from "./http.js";
+import { isMaPlayer, knownPlayers } from "./musicAssistant.js";
 import type { Config, Music, RadioStation } from "./types.js";
 
 /**
@@ -12,12 +13,25 @@ export function buildMusic(cfg: Config, states: Map<string, HaState>): Music | u
   const speakers = cfg.entities.speakers ?? [];
   const stations = cfg.entities.stations ?? [];
   if (!speakers.length) return undefined;
+  // Speakers playing together (#93): each board speaker's Music Assistant player, and who its group holds.
+  const players = knownPlayers(speakers, states);
+  const groupOf = (id: string) => {
+    const p = players.get(id);
+    const gm = (states.get(p ?? "")?.attributes as { group_members?: string[] } | undefined)?.group_members ?? [];
+    if (!p || gm.filter((x) => x !== p).length === 0) return undefined;
+    const ids = speakers.filter((o) => o.entityId !== id && gm.includes(players.get(o.entityId) ?? "")).map((o) => o.entityId);
+    return ids.length ? ids : undefined;
+  };
   return {
+    groupable: players.size > 1,
     speakers: speakers.map((s) => {
       const st = states.get(s.entityId);
-      const a = (st?.attributes ?? {}) as { media_content_id?: string; media_title?: string; media_artist?: string; app_name?: string; volume_level?: number };
+      const a = (st?.attributes ?? {}) as { media_content_id?: string; media_title?: string; media_artist?: string; media_album_name?: string; app_name?: string; volume_level?: number; entity_picture?: string; media_position?: number; media_duration?: number; media_position_updated_at?: string; supported_features?: number };
+      const feat = Number(a.supported_features ?? 0);
       const offline = !st || st.state === "unavailable" || st.state === "unknown";
       const playing = st?.state === "playing" || st?.state === "buffering";
+      const paused = st?.state === "paused";
+      const live = playing || paused; // låtinfo och omslag finns kvar när den pausats, så att man kan trycka Spela igen
       const station = playing ? stationIndex(stations, a.media_content_id) : -1;
       const title = playing ? (station >= 0 ? stations[station]!.name : [a.media_artist, a.media_title].filter(Boolean).join(" – ") || a.app_name) : undefined;
       return {
@@ -29,10 +43,29 @@ export function buildMusic(cfg: Config, states: Map<string, HaState>): Music | u
         station: station >= 0 ? station : undefined,
         volume: typeof a.volume_level === "number" ? Math.round(a.volume_level * 100) : undefined,
         playingUrl: playing && a.media_content_id && /^https?:\/\//.test(a.media_content_id) ? a.media_content_id : undefined,
+        track: live && station < 0 ? a.media_title || undefined : undefined,
+        artist: live && station < 0 ? a.media_artist || undefined : undefined,
+        album: live && station < 0 ? a.media_album_name || undefined : undefined,
+        cover: live && station < 0 && Boolean(a.entity_picture),
+        position: live && station < 0 && typeof a.media_position === "number" && typeof a.media_duration === "number" && a.media_duration > 0 ? a.media_position : undefined,
+        duration: live && station < 0 && typeof a.media_duration === "number" && a.media_duration > 0 ? a.media_duration : undefined,
+        positionAt: a.media_position_updated_at,
+        radioText: (() => {
+          if (!playing || station < 0) return undefined;
+          const t = [a.media_artist, a.media_title].filter(Boolean).join(" – ").trim();
+          const name = stations[station]!.name.toLowerCase();
+          return t && t.toLowerCase() !== name && !t.toLowerCase().includes(name) ? t : undefined;
+        })(),
+        paused,
+        canPause: live ? (feat & 1) === 1 : undefined,
+        canNext: live ? (feat & 32) === 32 : undefined,
+        canPrev: live ? (feat & 16) === 16 : undefined,
+        group: groupOf(s.entityId),
       };
     }),
     stations: stations.map((s, index) => ({ index, name: s.name, logo: s.logo, url: s.url })),
     spotify: spotifyInfo(states),
+    assistant: [...states.values()].some(isMaPlayer),
   };
 }
 
@@ -44,7 +77,7 @@ export function spotifyPlayer(states: Map<string, HaState>): HaState | undefined
 function spotifyInfo(states: Map<string, HaState>): Music["spotify"] {
   const s = spotifyPlayer(states);
   if (!s) return null;
-  const a = s.attributes as { media_title?: string; media_artist?: string; source?: string };
+  const a = s.attributes as { media_title?: string; media_artist?: string; source?: string; source_list?: string[] };
   const playing = s.state === "playing";
   return {
     entityId: s.entity_id,
@@ -52,6 +85,8 @@ function spotifyInfo(states: Map<string, HaState>): Music["spotify"] {
     title: [a.media_artist, a.media_title].filter(Boolean).join(" – ") || undefined,
     device: a.source || undefined,
     offline: s.state === "unavailable",
+    // Spotify Connect devices the account sees right now (soundbars, Sonos, TVs …) – awake ones only.
+    devices: (a.source_list ?? []).filter((x) => typeof x === "string").slice(0, 20),
   };
 }
 
@@ -152,7 +187,11 @@ export interface DirStation extends RadioStation {
 const SR = /^(sr|sveriges radio)\b[\s:–-]*/i;
 /** "SR P4 Jönköping" and "Sveriges Radio - P3" read as "P4 Jönköping" and "P3". */
 export function cleanName(name: string): { name: string; sr: boolean } {
-  const n = name.trim().replace(/\s+/g, " ");
+  let n = name.trim().replace(/\s+/g, " ");
+  // "Mix Megapol 104,3" / "RIX FM 105.5 FM": the frequency is not part of the name (and differs per city).
+  // Only when a real name is left: two stations called "Radio 107,5" and "Radio 106,9" must stay apart.
+  const noFreq = n.replace(/\s+\d{2,3}[.,]\d(\s*(fm|mhz))?$/i, "").trim();
+  if (noFreq !== n && noFreq.length >= 6 && !/^radio$/i.test(noFreq)) n = noFreq;
   if (SR.test(n)) {
     const rest = n.replace(SR, "").trim();
     if (rest) return { name: rest.slice(0, 40), sr: true };
@@ -261,4 +300,10 @@ export async function findStations(q: string): Promise<StationHit[]> {
   if (!ours.length && !world) throw new Error("Radiokanalerna går inte att hämta just nu.");
   const names = new Set(ours.map((x) => x.name.toLowerCase()));
   return [...ours, ...(world ?? []).filter((x) => !names.has(x.name.toLowerCase()))].slice(0, 12);
+}
+
+/** "spotify://playlist/abc" (Music Assistant) or "spotify:playlist:abc" → the Spotify URI the Spotify integration plays. */
+export function spotifyUri(uri: string): string | undefined {
+  const m = uri.match(/^spotify(?::\/\/|:)(playlist|album|track|artist|show|episode)[/:]([A-Za-z0-9]{10,40})$/);
+  return m ? `spotify:${m[1]}:${m[2]}` : undefined;
 }

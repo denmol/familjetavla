@@ -15,6 +15,19 @@ describe("buildMusic", () => {
     expect(buildMusic({ entities: { stations } } as unknown as Config, new Map())).toBeUndefined();
   });
 
+  it("passes on the station's rolling text (artist – title) but not the station name itself", () => {
+    const url = "http://sverigesradio.se/topsy/direkt/srapi/203.mp3";
+    const withText = buildMusic(cfg, new Map([st("media_player.kok", "playing", { media_content_id: url, media_artist: "Avicii", media_title: "Waiting For Love" })]))!;
+    expect(withText.speakers[0]!.radioText).toBe("Avicii – Waiting For Love");
+    const nameOnly = buildMusic(cfg, new Map([st("media_player.kok", "playing", { media_content_id: url, media_title: "P4 Jönköping" })]))!;
+    expect(nameOnly.speakers[0]!.radioText).toBeUndefined();
+  });
+
+  it("keeps the song, artist and transport buttons for a track, also while paused", () => {
+    const m = buildMusic(cfg, new Map([st("media_player.kok", "paused", { media_title: "Dancing Queen", media_artist: "ABBA", media_album_name: "Arrival", media_duration: 231, media_position: 40, supported_features: 1 | 16 | 32 })]))!;
+    expect(m.speakers[0]).toMatchObject({ playing: false, paused: true, track: "Dancing Queen", artist: "ABBA", album: "Arrival", duration: 231, canPause: true, canNext: true, canPrev: true });
+  });
+
   it("knows which favourite plays where, and the volume", () => {
     const m = buildMusic(
       cfg,
@@ -130,6 +143,9 @@ describe("all Swedish stations", () => {
     expect(cleanName("Sveriges Radio - P3")).toEqual({ name: "P3", sr: true });
     expect(cleanName("P4 Östergötland")).toEqual({ name: "P4 Östergötland", sr: true });
     expect(cleanName("Mix Megapol")).toEqual({ name: "Mix Megapol", sr: false });
+    expect(cleanName("Mix Megapol 104,3")).toEqual({ name: "Mix Megapol", sr: false });
+    expect(cleanName("RIX FM 105.5 FM")).toEqual({ name: "RIX FM", sr: false });
+    expect(cleanName("Radio 107,5")).toEqual({ name: "Radio 107,5", sr: false });
     expect(cleanName("Sr")).toEqual({ name: "Sr", sr: false });
   });
 
@@ -197,7 +213,13 @@ describe("Spotify", () => {
     expect(buildMusic(cfg, new Map([st("media_player.kok", "idle")]))!.spotify).toBeNull();
   });
   it("shows what plays and where", () => {
-    const m = buildMusic(cfg, new Map([st("media_player.kok", "playing"), st("media_player.spotify_anna", "playing", { media_artist: "Laleh", media_title: "Some Die Young", source: "Kök" })]))!;
-    expect(m.spotify).toEqual({ entityId: "media_player.spotify_anna", playing: true, title: "Laleh – Some Die Young", device: "Kök", offline: false });
+    const m = buildMusic(cfg, new Map([st("media_player.kok", "playing"), st("media_player.spotify_anna", "playing", { media_artist: "Laleh", media_title: "Some Die Young", source: "Kök", source_list: ["Kök", "Q-Series Soundbar"] })]))!;
+    expect(m.spotify).toEqual({ entityId: "media_player.spotify_anna", playing: true, title: "Laleh – Some Die Young", device: "Kök", offline: false, devices: ["Kök", "Q-Series Soundbar"] });
+  });
+  it("turns library links into Spotify URIs", async () => {
+    const { spotifyUri } = await import("./music.js");
+    expect(spotifyUri("spotify://playlist/37i9dQZF1DXcBWIGoYBM5M")).toBe("spotify:playlist:37i9dQZF1DXcBWIGoYBM5M");
+    expect(spotifyUri("spotify:album:4aawyAB9vmqN3uQ7FjRGTy")).toBe("spotify:album:4aawyAB9vmqN3uQ7FjRGTy");
+    expect(spotifyUri("tidal://playlist/1")).toBeUndefined();
   });
 });

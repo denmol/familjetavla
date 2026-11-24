@@ -1,3 +1,4 @@
+import { alertReceivers, homeAlerts, newHomeMemory } from "./homealerts.js";
 import type { FastifyBaseLogger } from "fastify";
 import { ha, haConnection } from "./connectors/ha.js";
 import { buildDashboard, gatherFamily } from "./dashboard.js";
@@ -5,7 +6,9 @@ import { haSocket } from "./connectors/haws.js";
 import { buildPlan, dutyMessage, duties, needsAttention, type Duty } from "./plan.js";
 import { loadShelf, saveShelf } from "./meals.js";
 import { travelKey } from "./travel.js";
-import { loadConfig } from "./store.js";
+import { loadConfig, loadLocal, saveLocal } from "./store.js";
+import { collectWaste } from "./sources.js";
+import { updateAvailable, updateNotice } from "./updates.js";
 import { addDays, hhmm, isoWeekday, startOfDay } from "./time.js";
 import type { Person } from "./types.js";
 
@@ -22,6 +25,7 @@ export interface Outgoing {
 export const SHELF_DONE = "FAMILJETAVLA_LAMNAT:";
 
 const MORNING = "06:45";
+const WASTE = "19:30";
 
 const join = (xs: string[]) => xs.join(" · ");
 
@@ -30,6 +34,7 @@ const join = (xs: string[]) => xs.join(" · ");
  *  - `before` minutes before each duty: "Om 30 min: Hämta Maja på förskolan 16:00"
  *    (a drop-off with something to bring: "… – ta med: blöjor, extrakläder")
  *  - morning (06:45 unless changed): today's "kom ihåg" and what that person is responsible for today
+ *  - 19:30 (changeable): "Sopor hämtas imorgon" when a pickup is tomorrow
  *  - 20:00: tomorrow's duties for that person
  *  - Sunday 19:00: "Planera veckan" when something has no one yet
  */
@@ -45,6 +50,7 @@ export function dueNotifications(
   missingTomorrow: number,
   now: Date,
   todayItems: { text: string; personId?: string }[] = [],
+  wasteTomorrow: string[] = [],
 ): Outgoing[] {
   const out: Outgoing[] = [];
   const t = hhmm(now);
@@ -71,6 +77,14 @@ export function dueNotifications(
       // Own duties always; the day's list only for the children this grown-up follows.
       const lines = [...today.map((d) => dutyMessage(d)), ...todayItems.filter((i) => follows(a, i.personId)).map((i) => i.text)];
       if (lines.length) out.push({ service: n.service, title: "Idag", message: join(lines), key: `morning:${a.id}:${now.toDateString()}` });
+    }
+    if (wasteTomorrow.length && wasteTime(a) === t) {
+      out.push({
+        service: n.service,
+        title: "Sopor imorgon",
+        message: `${wasteTomorrow.join(", ")} hämtas imorgon – ställ ut kärlet ikväll`,
+        key: `waste:${a.id}:${tomorrow.toDateString()}`,
+      });
     }
     if (n.evening && t === "20:00") {
       const tm = mine.filter((d) => d.at >= tomorrow && d.at < dayAfter);
@@ -129,6 +143,11 @@ export function morningTime(a: Person): string {
   return a.notify?.morning ?? MORNING;
 }
 
+/** When this grown-up gets the evening-before waste notification, or "" when it is off. */
+export function wasteTime(a: Person): string {
+  return a.notify?.waste ?? WASTE;
+}
+
 /** A reminder as one line for the phone: "Regn under dagen – ta regnjackan" (board-only hints left out). */
 export function reminderLine(r: { title: string; sub: string }): string {
   return r.sub && !/tryck|bocka|tavlan|planera veckan/i.test(r.sub) ? `${r.title} – ${r.sub.charAt(0).toLowerCase()}${r.sub.slice(1)}` : r.title;
@@ -148,6 +167,7 @@ export function startNotifier(log: FastifyBaseLogger) {
     }
   });
   let lastMinute = "";
+  const homeMem = newHomeMemory();
   const tick = async () => {
     const now = new Date();
     const minute = `${now.toDateString()} ${hhmm(now)}`;
@@ -177,10 +197,36 @@ export function startNotifier(log: FastifyBaseLogger) {
       // The morning list is the board's own "kom ihåg" – only built in the minute someone gets it.
       const t = hhmm(now);
       const todayItems = adults.some((a) => morningTime(a) === t) ? (await buildDashboard(now, { allReminders: true })).reminders.map((r) => ({ text: reminderLine(r), personId: r.personId })) : [];
-      for (const m of dueNotifications(adults, list, plan.missing, missingTomorrow, now, todayItems)) {
+      // Tomorrow's waste pickups – only looked up in the minute someone gets that notification.
+      let wasteTomorrow: string[] = [];
+      if (adults.some((a) => wasteTime(a) === t)) {
+        const tomorrowKey = addDays(startOfDay(now), 1).toDateString();
+        wasteTomorrow = [...new Set((await collectWaste(cfg, [])).filter((w) => startOfDay(w.date).toDateString() === tomorrowKey).map((w) => w.type))];
+      }
+      for (const m of dueNotifications(adults, list, plan.missing, missingTomorrow, now, todayItems, wasteTomorrow)) {
         if (sent.has(m.key)) continue;
         sent.add(m.key);
         await ha.service(conn, "notify", m.service, { title: m.title, message: m.message, ...(m.actions ? { data: { actions: m.actions } } : {}) }).catch((e) => log.warn(`Notis till ${m.service} misslyckades: ${(e as Error).message}`));
+      }
+      // Hemmet: machines, robots, doors, garage, alarm – to the adults at home.
+      const sec = cfg.entities.security;
+      if ((cfg.entities.appliances ?? []).length || (cfg.entities.robots ?? []).length || sec) {
+        const states = new Map((await ha.states(conn)).map((s) => [s.entity_id, s]));
+        for (const alert of homeAlerts(cfg, states, homeMem, now)) {
+          if (sent.has(alert.key)) continue;
+          sent.add(alert.key);
+          for (const a of alertReceivers(adults, states, alert.to)) {
+            await ha.service(conn, "notify", a.notify!.service!, { title: alert.title, message: alert.message }).catch((e) => log.warn(`Notis till ${a.notify!.service} misslyckades: ${(e as Error).message}`));
+          }
+        }
+      }
+      // Ny version av Familjetavlan: en notis per version, till de vuxna som har notiser på.
+      const notice = updateNotice(updateAvailable(), loadLocal().updateNotified);
+      if (notice) {
+        for (const a of adults.filter((x) => x.notify?.updates !== false)) {
+          await ha.service(conn, "notify", a.notify!.service!, { title: notice.title, message: notice.message }).catch((e) => log.warn(`Notis till ${a.notify!.service} misslyckades: ${(e as Error).message}`));
+        }
+        saveLocal({ updateNotified: notice.version });
       }
       if (sent.size > 2000) sent.clear();
     } catch (e) {

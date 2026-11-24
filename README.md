@@ -2,9 +2,11 @@
 
 # Familjetavla
 
+<p align="center"><a href="https://github.com/sponsors/murre87"><img src="https://img.shields.io/badge/Sponsra-%E2%9D%A4-db61a2?logo=githubsponsors&logoColor=white" alt="Sponsra på GitHub"></a></p>
+
 **En familjetavla för surfplattan i hallen eller köket** – byggd för svenska familjer – med eller utan växelvis boende – som kör Home Assistant (men fungerar även utan).
 
-Kalendrar, **barnvecka**, barnens **sport** (SportAdmin, laget.se) med **dit/hem** (vem skjutsar, buss eller skjuts), **skola** (schema, gympapåse, skolmat), **sophämtning**, **inköpslista** (som kan skickas till Willys), **elpris** med billigaste timmarna – och från Home Assistant: **bilar, ljus, musik, dammsugare, värmepump, spabad, solel och grafer**. Allt sätts upp i en **visuell guide**, utan YAML.
+Kalendrar, **barnvecka**, barnens **sport** (SportAdmin, laget.se) med **dit/hem** (vem skjutsar, buss eller skjuts), **skola** (schema, gympapåse, skolmat), **sophämtning**, **inköpslista** (som kan skickas till Willys), **elpris** med billigaste timmarna – och från Home Assistant: **bilar, ljus, musik, värmepump, spabad, solel och grafer**. Allt sätts upp i en **visuell guide**, utan YAML.
 
 **[Prova demon i webbläsaren](https://murre87.github.io/familjetavla/demo/familjetavla-demo.html)**, ingen installation behövs.
 
@@ -36,13 +38,28 @@ Kalendrar, **barnvecka**, barnens **sport** (SportAdmin, laget.se) med **dit/hem
 - **Kommande 7 dagar:** färg per person. Barnens sport syns bara på barnveckorna – men t.ex. **matcher alla veckor** om du vill.
 - **Inköpslista** (egen eller Home Assistants), **elpris**, bilar, ljus och temperaturer.
 - **Välj själv** vilka rutor som visas och i vilken ordning. Rutor utan data döljs.
+- **Jul:** 21 november – 26 december visas julkortet [Nordpol](https://github.com/DKAnord/nordpol-card) som standard: nedräkning, tomtekameror, släde, snällista och dagens tomte. Under Inställningar → Visning väljer du automatiskt, alltid på eller av.
 - Ljust/mörkt tema eller **dygnsfärger**, nattläge med klocka som flyttar sig (skonar OLED).
 
 **Flikar** (visas bara om du har något att visa)
-- **Bil:** batteri, räckvidd, hemma/borta, "data 18 h gammal", **Alla data** (bilens alla entiteter i grupper, ✓/⚠), bilens knappar (blinka, tuta, lås), **Starta värme nu** och **schema per veckodag**.
+- **Bil:** batteri, räckvidd, hemma/borta, "data 18 h gammal", **Alla data** (bilens alla entiteter i grupper, ✓/⚠), bilens knappar (blinka, tuta, lås), **Starta värme nu** och **schema per veckodag**. **Laddschema:** laddgräns, laddboxens inställningar och laddautomationer som redan finns i HA – eller ett eget laddschema (t.ex. mån–fre 22–06) som sparas i Home Assistant och fungerar även när tavlan är avstängd.
 - **Ljus:** rum med Tänd alla / Släck alla, "6 av 8 tända · offline: …", egna knappar för scener ("Godnatt – släck uppe").
-- **Musik:** alla svenska radiokanaler (Sveriges Radio med alla P4, Mix Megapol, RIX FM …) i fliken Musik, favoriterna som en liten ruta på startsidan. Spelar i vald högtalare – Google Home/Nest, Chromecast, Sonos eller annat i Home Assistant – med Stopp och volym. Spotify visas med Spela/Paus och Nästa om integrationen finns.
-- **Dammsugare:** robotdammsugare med **husets karta** – tryck på rummen du vill städa (Roborock och Dreame), starta, pausa, åk hem och hitta dammsugaren, sugkraft, **inställningar** (moppläge, volym, stör inte …) och förbrukningsdelar. Andra märken i Home Assistant (Roomba, Ecovacs, Valetudo …) får start, paus, hem, sugkraft och karta, men rumsval görs i märkets egen app.
+- **Musik:** alla svenska radiokanaler (Sveriges Radio med alla P4, Mix Megapol, RIX FM …) i fliken Musik, favoriterna som en liten ruta på startsidan. Spelar i vald högtalare – Google Home/Nest, Chromecast, Sonos eller annat i Home Assistant – med Stopp och volym. Radion behöver inget extra.
+  - **Spotify med spellistor, album, poddar och sök** (omslag som i bilens musikspelare) kräver [Music Assistant](https://music-assistant.io), gratis:
+    - *Home Assistant OS:* Inställningar → Tillägg → Music Assistant → Installera. Fliken Musik har en knapp dit.
+    - *Home Assistant i Docker:* starta Music Assistant som egen container (Portainer/Synology/Unraid eller `docker compose`), se texten nedan. Fliken Musik visar samma steg med en Kopiera-knapp.
+    - Lägg sedan till Spotify i Music Assistant (Inställningar → Musikleverantörer) och integrationen Music Assistant i Home Assistant med adressen `http://<server>:8095`.
+
+    ```yaml
+    services:
+      music-assistant:
+        image: ghcr.io/music-assistant/server:latest
+        restart: unless-stopped
+        network_mode: host
+        volumes:
+          - ./music-assistant:/data
+    ```
+- **Smart laddning:** har du en smartstyrning som planerar laddningen (billigaste timmarna, solel) visas **planen** för de kommande 24 timmarna, och en laddknapp med **Auto / Ladda nu / Pausa** som ger samma överstyrning som styrningens egen app. Hittas automatiskt om styrningen följer [avtalet](docs/SMART-LADDNING.md).
 - **Hus:** termostater, värmepump, varmvatten och **spabad** (Balboa, Gecko …) med lägen och pumpar. **Enhetskort** för värmepumpar som bara ger sensorer, t.ex. via **Husdata H60/H66**.
 - **Energi:** solel, köp/sälj mot nätet, husets effekt, hembatteri – vilken växelriktare som helst.
 - **Grafer:** senaste dygnet för valfria sensorer + elpris.
@@ -63,22 +80,25 @@ Det som inte finns i HA sköts av **leverantörsmoduler**:
 | Kalender | **laget.se** | Lagets kalender → Prenumerera (en länk per lag) | stabil |
 | Kalender | **SportAdmin** | Appen → Aktiviteter → Prenumerera. **Lagfilter** om barnet har flera lag | stabil |
 | Kalender | Home Assistant | Valfri `calendar.*` | stabil |
+| Skola | InfoMentor via Home Assistant | Skoldagssensor per barn, valfri kalender och skolnyheter | beta |
 | Skola | SchoolSoft, Unikum, IST, Skola24, InfoMentor, Edlevo | Kalenderlänk (ICS) | stabil |
-| Skola | InfoMentor via Home Assistant (HACS) | Skoltider (Skoldag-sensorn), skolans händelser och nyheter | beta |
 | Skolmat | **Skolmaten.se** | Ingen inloggning | beta |
 | Skolmat | Skolmat-integrationen i HA | Mashie, Matilda, FoodIT, Mateo, skolmat.info | stabil |
 | Skola och förskola | **Vklass** | Schema, idrott, omsorgstid, matsedel. Användarnamn + lösenord (inte BankID) | beta |
 | Skola | **SchoolSoft** | Kalender och matsedel. Användarnamn + lösenord (inte BankID) | beta, nytt |
+| Förskola | **Tyra** | Förskolans kalender och omsorgstider. Mobilnummer + lösenord (inte BankID) | experimentell, nytt |
 | Sopor | Sök på adress | 18 renhållare (EDP Future) – provas mot riktiga adresser varje vecka | stabil |
 | Sopor | **SRV Återvinning** | Botkyrka, Haninge, Huddinge, Nynäshamn, Salem – sök på adress, provas varje vecka | stabil |
 | Sopor | Eget schema | Kärl, en hämtdag, intervall, ev. vissa månader | stabil |
 | Sopor | ICS eller HA-kalender | t.ex. Waste Collection Schedule (~50 svenska renhållare) | stabil |
 | Mataffär | **Willys** | Inloggning via dold webbläsare, sedan varukorgen | beta |
+| Mataffär | **ICA** | Personnummer + PIN som i ICA-appen; listan läggs i en inköpslista i appen (ingen varukorg) | experimentell |
+| Mataffär | **City Gross** | E-post + lösenord; sök (öppen, per butik) och varukorg | experimentell |
 | Mataffär | Hemköp | Samma plattform som Willys | experimentell |
 | Elpris | Spotpris SE1–SE4 | elprisetjustnu.se + ditt påslag, nät, skatt, moms | stabil |
 | Elpris | HA-sensor | Nordpool, Tibber m.fl. | beta |
 
-> Vklass, SchoolSoft, Willys/Hemköp, EDP och SRV är **inofficiella** kopplingar och kan sluta fungera när sajterna ändras. BankID går inte att automatisera – kontona behöver ett lösenord.
+> Vklass, SchoolSoft, Tyra, Willys/Hemköp/ICA/City Gross, EDP och SRV är **inofficiella** kopplingar och kan sluta fungera när sajterna ändras. BankID går inte att automatisera – kontona behöver ett lösenord.
 
 ## Installera
 
@@ -103,7 +123,7 @@ docker compose up -d     # se docker-compose.yml
 Öppna `http://<datorn>:8099`. Ange Home Assistants adress (t.ex. `http://192.168.1.10:8123`, inte `localhost`) och en **långlivad token** från en administratör i guiden.
 
 - **Sätt en PIN** i guidens sista steg. Då kommer bara skärmar som låsts upp med PIN-koden en gång åt tavlan – inte gäster eller andra enheter på wifi:t.
-- **Uppdatera:** `docker compose pull && docker compose up -d`. Inställningarna ligger kvar i `./data`.
+- **Uppdateras av sig själv:** `docker-compose.yml` startar också Watchtower, som hämtar nya versioner var sjätte timme. Vill du uppdatera själv, ta bort tjänsten `watchtower` och kör `docker compose pull && docker compose up -d`. Inställningarna ligger kvar i `./data`.
 
 ### Utan Home Assistant och utan Docker
 
@@ -164,12 +184,24 @@ för båda. Hur du gör, och hur du testar på alla skärmar, står i **[CONTRIB
 
 Har du ingen kod men en plattform eller pryl som saknas? [Berätta här](../../issues/new/choose).
 
-Önskas: ICA, Coop, Mathem, Unikum, Trafiklab (nästa buss), hembatterier.
+Önskas: ICA, Coop, Mathem, Unikum, InfoMentor, Trafiklab (nästa buss), hembatterier.
 
 ## Tack
 
-Kopplingarna bygger på kartläggning från andra öppna projekt: [willys-mcp](https://github.com/oscarthroedsson/willys-mcp) (Willys/Axfood), [Waste Collection Schedule](https://github.com/mampfes/hacs_waste_collection_schedule) (EDP Future-renhållare och SRV Återvinning – en veckovis koll larmar om deras kod eller tjänsten ändras), [Vklass scrape sensor](https://community.home-assistant.io/t/vklass-scrape-sensor/939402), [node-schoolsoft](https://github.com/CarelessInternet/node-schoolsoft) (SchoolSoft) och [Skolmat](https://github.com/Kaptensanders/skolmat) (skolmaten.se). Elpris från [elprisetjustnu.se](https://www.elprisetjustnu.se), väder från [Open-Meteo](https://open-meteo.com), postnummer från [OpenStreetMap Nominatim](https://nominatim.org).
+Kopplingarna bygger på kartläggning från andra öppna projekt: [ha-ica-todo](https://github.com/lazytarget/ha-ica-todo) (ICA), [willys-mcp](https://github.com/oscarthroedsson/willys-mcp) (Willys/Axfood), [Waste Collection Schedule](https://github.com/mampfes/hacs_waste_collection_schedule) (EDP Future-renhållare och SRV Återvinning – en veckovis koll larmar om deras kod eller tjänsten ändras), [Vklass scrape sensor](https://community.home-assistant.io/t/vklass-scrape-sensor/939402), [node-schoolsoft](https://github.com/CarelessInternet/node-schoolsoft) (SchoolSoft) och [Skolmat](https://github.com/Kaptensanders/skolmat) (skolmaten.se). Elpris från [elprisetjustnu.se](https://www.elprisetjustnu.se), väder från [Open-Meteo](https://open-meteo.com), postnummer från [OpenStreetMap Nominatim](https://nominatim.org). Julkortet är [Nordpol Card](https://github.com/DKAnord/nordpol-card) av DKAnord (MIT), inlagt oförändrat med sin licens i `web/src/jul/`.
 
 ## Licens
 
-MIT
+Familjetavla är fri programvara under [GNU Affero General Public License v3.0](LICENSE) (AGPL-3.0), samma licens som EnergyWizard.
+Du får använda, ändra och sprida koden fritt. Den som sprider en ändrad version, eller kör den som en tjänst
+åt andra, ska dela sin källkod under samma licens.
+
+Versioner till och med 0.27.0 släpptes under MIT och gäller fortfarande under MIT. Kod som bygger på andra
+projekt (se *Tack* ovan) behåller sin egen licens och upphovsrätt.
+
+## ❤️ Stöd projektet
+
+Familjetavla är gratis och utan reklam. Gillar du den får du gärna
+[sponsra på GitHub](https://github.com/sponsors/murre87) - det betalar tid och
+hårdvara att testa nya integrationer mot. En ⭐ på repot hjälper också andra
+familjer att hitta hit.

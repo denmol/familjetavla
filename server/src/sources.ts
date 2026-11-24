@@ -13,10 +13,16 @@ const MIN = 60_000;
 export interface SourcedEvent extends CalEvent {
   sourceId: string;
   personId?: string;
+  /** Alla personer kalendern gäller (se CalendarSource.personIds). */
+  personIds?: string[];
   category: CalendarCategory;
   gym?: boolean;
   /** Homework, test or hand-in from a school platform. */
   task?: boolean;
+  /** Attachments of that task. */
+  files?: { name: string; url: string }[];
+  /** What the platform itself calls the task. */
+  taskKind?: "läxa" | "prov" | "inlämning" | "uppgift";
   /** The item on the school platform. */
   url?: string;
   /** A school calendar item that is not a lesson (see SchoolEvent.post). */
@@ -49,13 +55,14 @@ export async function collectCalendars(cfg: Config, from: Date, to: Date, errors
   const results = await Promise.all(
     cfg.calendars.map(async (src) => {
       try {
-        const evs = await cached(`cal:${src.id}:${from.toDateString()}`, 15 * MIN, () => calendarEvents(src, from, to));
+        const evs = await cached(`cal:${src.id}:${from.toDateString()}:${to.toDateString()}`, 15 * MIN, () => calendarEvents(src, from, to));
         const always = (src.alwaysShow ?? []).map((s) => s.trim().toLowerCase()).filter(Boolean);
         return filterEvents(evs, src.include, src.exclude).map((e) => ({
           ...e,
           sourceId: src.id,
           sourceName: src.name,
           personId: src.personId,
+          personIds: src.personIds,
           category: src.category,
           ignoreCustody:
             src.visibility === "always" ||
@@ -92,10 +99,11 @@ export async function collectSchool(cfg: Config, from: Date, to: Date, errors: S
         const provider = findProvider("school", integ.provider);
         if (!provider) return;
         try {
-          const data = await cached(`school:${integ.id}:${from.toDateString()}`, 60 * MIN, () => provider.fetch(makeCtx(integ), from, to));
+          const data = await cached(`school:${integ.id}:${from.toDateString()}:${to.toDateString()}`, 60 * MIN, () => provider.fetch(makeCtx(integ), from, to));
           for (const e of data.events) {
             const personId = e.child ? integ.personMap?.[e.child] : integ.personId;
             out.events.push({ ...e, sourceId: `school:${integ.id}`, personId, category: "school" });
+            for (const f of e.files ?? []) newsFiles.set(f.url, integ.id);
           }
           for (const c of data.care ?? []) {
             const pid = c.child ? integ.personMap?.[c.child] : integ.personId;
@@ -150,11 +158,19 @@ export async function collectPrices(cfg: Config, now: Date, errors: SourceError[
   }
 }
 
+/** Every chosen store (the list goes to the one in `shopping.sendTo`, else the first). */
+export function groceryIntegrations(cfg: Config) {
+  return cfg.integrations
+    .filter((i) => i.category === "grocery")
+    .flatMap((integ) => {
+      const provider = findProvider("grocery", integ.provider);
+      return provider ? [{ integ, provider }] : [];
+    });
+}
+
 export function groceryIntegration(cfg: Config) {
-  const integ = single(cfg, "grocery");
-  if (!integ) return null;
-  const provider = findProvider("grocery", integ.provider);
-  return provider ? { integ, provider } : null;
+  const all = groceryIntegrations(cfg);
+  return all.find((g) => g.integ.id === cfg.shopping.sendTo) ?? all[0] ?? null;
 }
 
 /** Total price per kWh incl. markup, grid fee, energy tax and VAT, from spot SEK/kWh. */
